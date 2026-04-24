@@ -3,7 +3,7 @@ Fazle Core — Admin Command Processor
 Parses and executes admin commands received via WhatsApp.
 
 Command formats (case-insensitive):
-  APPROVE <id>                    — approve draft reply / payment draft
+  APPROVE <id>                    — approve draft reply AND send to recipient
   REJECT <id>                     — reject draft
   EDIT <id> <new text>            — edit draft text
   PAID <id> <amount> <method>     — mark payment as paid and notify accountant
@@ -11,9 +11,9 @@ Command formats (case-insensitive):
   STATUS                          — show pending drafts count
   DRAFTS                          — list recent pending drafts
 
-Safe mode: even when admin commands are processed, all outgoing sends
-still respect AUTO_REPLY_ENABLED. Admin command replies ARE sent to admin
-regardless (they are confirmations, not public-facing messages).
+APPROVE completes the full loop: load draft → mark approved → deliver to recipient
+via the correct bridge → mark sent_at. This fires even in SAFE MODE — admin approval
+IS the decision to send.
 """
 import logging
 import re
@@ -85,25 +85,72 @@ async def process_admin_command(text: str, admin_phone: str) -> str:
 # ── Command implementations ────────────────────────────────────────────────────
 
 async def _cmd_approve(draft_id: int, admin_phone: str) -> str:
-    """Approve a draft reply — mark it approved in fazle_draft_replies."""
+    """
+    Approve a draft reply — mark approved then SEND to recipient immediately.
+    Admin approval IS the decision to send, regardless of AUTO_REPLY_ENABLED.
+    """
     try:
         row = await fetch_one(
             "SELECT * FROM fazle_draft_replies WHERE id = $1", draft_id
         )
         if not row:
             return f"❌ Draft #{draft_id} পাওয়া যায়নি।"
-        if row.get("status") not in ("pending", None):
+        if row.get("status") not in ("pending", None, "edited"):
             return f"⚠️ Draft #{draft_id} ইতিমধ্যে {row.get('status', 'processed')}।"
 
+        recipient = row.get("recipient", "")
+        reply_text = row.get("reply_text", "")
+        source = row.get("source", "bridge1")
+
+        # Mark approved first
         await execute(
             "UPDATE fazle_draft_replies SET status='approved', admin_phone=$1, approved_at=NOW() WHERE id=$2",
             admin_phone, draft_id,
         )
-        return (
-            f"✅ Draft #{draft_id} অনুমোদিত।\n\n"
-            f"প্রাপক: {row.get('recipient', '?')}\n"
-            f"বার্তা:\n{row.get('reply_text', '')[:200]}"
-        )
+
+        # Attempt to deliver — import bridges here to avoid circular imports
+        sent = False
+        error_text = ""
+        try:
+            from app.bridge import get_bridge1, get_bridge2
+            bridge = get_bridge1() if source in ("bridge1", "meta") else get_bridge2()
+            # Bridge expects JID format for non-meta sends
+            jid = recipient if "@" in recipient else f"{recipient}@s.whatsapp.net"
+            sent = await bridge.send(jid, reply_text)
+            if sent:
+                await execute(
+                    "UPDATE fazle_draft_replies SET status='sent', sent_at=NOW() WHERE id=$1",
+                    draft_id,
+                )
+                log.info(f"[admin_cmd] Draft #{draft_id} sent to {recipient} via {source}")
+            else:
+                error_text = "Bridge send returned false"
+                await execute(
+                    "UPDATE fazle_draft_replies SET error_text=$1 WHERE id=$2",
+                    error_text, draft_id,
+                )
+        except Exception as send_err:
+            error_text = str(send_err)[:200]
+            log.error(f"[admin_cmd] Draft #{draft_id} send error: {send_err}")
+            await execute(
+                "UPDATE fazle_draft_replies SET error_text=$1 WHERE id=$2",
+                error_text, draft_id,
+            )
+
+        preview = reply_text[:200] if reply_text else ""
+        if sent:
+            return (
+                f"✅ Draft #{draft_id} অনুমোদিত ও পাঠানো হয়েছে।\n\n"
+                f"প্রাপক: {recipient}\n"
+                f"বার্তা:\n{preview}"
+            )
+        else:
+            return (
+                f"✅ Draft #{draft_id} অনুমোদিত — কিন্তু পাঠাতে সমস্যা হয়েছে।\n"
+                f"ত্রুটি: {error_text}\n\n"
+                f"প্রাপক: {recipient}\n"
+                f"বার্তা:\n{preview}"
+            )
     except Exception as e:
         log.error(f"[admin_cmd] approve error: {e}")
         return f"❌ ত্রুটি: {e}"
@@ -113,10 +160,12 @@ async def _cmd_reject(draft_id: int, admin_phone: str) -> str:
     """Reject a draft reply."""
     try:
         row = await fetch_one(
-            "SELECT * FROM fazle_draft_replies WHERE id = $1", draft_id
+            "SELECT id, status FROM fazle_draft_replies WHERE id = $1", draft_id
         )
         if not row:
             return f"❌ Draft #{draft_id} পাওয়া যায়নি।"
+        if row.get("status") in ("sent", "rejected"):
+            return f"⚠️ Draft #{draft_id} ইতিমধ্যে {row.get('status')}।"
 
         await execute(
             "UPDATE fazle_draft_replies SET status='rejected', admin_phone=$1, approved_at=NOW() WHERE id=$2",

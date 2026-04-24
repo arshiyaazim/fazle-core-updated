@@ -62,6 +62,7 @@ async def process_message(
 
     user_role = await detect_role(sender)
     role_str = user_role["role"]
+    log.info(f"[ROLE] {sender} → {role_str}")
 
     # ── 1. ESCORT CLIENT — never reply, always draft to admin ─────────────────
     if role_str == "escort_client":
@@ -97,6 +98,7 @@ async def process_message(
     intent = classify(text)
     if intent == "unknown":
         intent = await ai.classify_intent_llm(text)
+    log.info(f"[INTENT] {sender} → {intent}")
 
     # ── 3. RECRUITMENT ─────────────────────────────────────────────────────────
     if role_str in ("new_lead", "known_contact") or intent == "recruitment":
