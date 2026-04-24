@@ -1,0 +1,62 @@
+﻿Cash_payment, Employee Financial and Attendance Requests: 
+The AI manages internal communications with staff regarding salary advances and attendance:
+* Verification Drafts: When an employee requests money due to personal emergencies, the AI drafts a response expressing sympathy but asks for verification (such as a selfie on duty and a photo of their duty slip) before the request can be processed 13-15.
+When a vessel escort finishes their duty, the primary documentation required is the Release Slip 1.
+The process for obtaining and submitting this documentation involves several steps:
+* Transition from Duty Slip to Release Slip: Initially, every escort is issued a Duty Slip when they start a job, which contains details like the vessel name, the ship Master’s number, and the start date 2. When the duty ends—either because the ship is empty or the port supervisor decides the escort is no longer needed—the supervisor writes the release date and time on that same Duty Slip and signs it 1, 3. Once signed and dated, this document is referred to as the Release Slip 1.
+* Submission via WhatsApp: The escort is required to take a clear photo of the signed Release Slip and send it to the system’s WhatsApp number 1.
+* Verification of Expenses: Along with the slip, the escort must provide information regarding food money provided by the ship's Master or authority 1. The system needs to confirm these details before providing the escort with funds for their return travel to the office 1.
+The submission of the Release Slip is a critical trigger for the system. It allows the AI to automatically calculate the total duration of the duty, the escort's salary based on those days, and any remaining balance after subtracting previous advances 4, 5. This data is then used by the accountant to finalize the employee's payment 6.
+
+
+
+
+* Payment Templates: For financial approvals, the AI drafts a specific template containing the Employee ID, Name, Payment Method (Bkash/Nagad), and Amount. This draft is sent to the Admin; once the Admin forwards it back, the AI sends it to the Accountant to finalize the transaction 7, 16, 17.
+The AI uses a multi-layered approach to verify an employee's identity and the legitimacy of their request before any payments are processed:
+1. Primary Identification via Registered Number
+The system identifies employees primarily through their mobile phone numbers, which are stored in the database as their Employee ID 1.
+* When a message is sent from a registered WhatsApp number, the AI immediately identifies who the sender is 1.
+* If an employee messages from their registered number but claims to be someone else (for example, the database says the owner is "Karim" but the message says "I am Rahim"), the AI will point out the discrepancy, display the stored Employee ID for that number, and instruct them that any requests must come from their own registered account 1.
+2. Visual Verification (Selfie on Duty)
+To ensure the person requesting funds is actually at their post, the AI requires visual proof:
+* Employees (guards or escorts) are asked to take and send a selfie from their current duty location (such as on a ship or at a security post) 2.
+* This photo serves as "strong logical justification" that the employee is actively working while making the financial request 2.
+3. Document Verification (Duty and Release Slips)
+For staff working as vessel escorts, specific documentation is required:
+* Duty Slip: The employee must send a clear photo of their "Duty Slip," which contains details like the vessel name, the ship Master’s number, and the date they started their duty 2, 3.
+* Release Slip: Once a job is finished, they must send a photo of the "Release Slip" signed and dated by the supervisor 4. The AI may eventually use image-reading capabilities to automatically verify these documents 5.
+4. Payment Method Confirmation
+Even after the identity is confirmed, the AI follows a strict protocol for the payment details:
+* The AI asks the employee to explicitly state whether they want the payment via Bkash or Nagad and to provide the number 3, 6.
+* To prevent errors, the system is designed to confirm the payment number every single time a request is made, even if the employee has used that number before 7.
+5. Admin and Accounting Oversight
+The final step in the verification chain involves human oversight:
+* The AI drafts a payment template (including the Employee ID, Name, Payment Method, and Amount) and sends it to the Admin 6, 8.
+* The payment is only forwarded to the Accountant for processing once the Admin reviews and sends the draft back to the system 6, 9.
+In the Fazle System, the Accountant serves as the final authority for executing financial transactions. Their role is integrated into the automated workflow as follows:
+* Drafting and Shorthand: Once the details are confirmed, the AI generates a payment template for the Admin. This template uses shorthand for the payment method, such as "B" for Bkash and "N" for Nagad 3.
+* Admin and Accountant Workflow: This draft—containing the Employee ID, name, confirmed number, and amount—is sent to the Admin 3. After the Admin reviews and forwards the message back to the system, the AI sends the final instruction to the Accountant to execute the payment 3, 4.
+
+
+
+
+1. Final Recipient of Payment Instructions
+The Accountant does not interact directly with initial employee requests. Instead, they receive a finalized payment template via WhatsApp only after the AI has drafted it and the Admin has reviewed and approved it 1, 2. This template contains:
+* The Employee ID and Name.
+* The Payment Method (Bkash, Nagad, or Cash).
+* The specific Amount to be paid 1.
+2. Trigger for Database Updates
+The act of the AI forwarding the payment instruction to the Accountant’s WhatsApp is a critical system trigger. Once this message is sent:
+* The system immediately updates the database to reflect the transaction 3.
+* The payment is officially recorded in the Daily Cash Ledger 4.
+* For vessel escorts, this step also causes the "Release Date" to be logged in the system, finalizing that specific duty cycle 5.
+3. Management of Advances and Salaries
+The Accountant is responsible for processing various types of payments that the AI tracks:
+* Advances: Any money sent to an employee via the Accountant before their final salary calculation is categorized as an "Advance" in their personal ledger 4.
+* Salary Finalization: The Accountant’s records allow the system to calculate the final amount due to an employee by subtracting these advances from the total salary earned based on their duty days 4, 6.
+In summary, the Accountant acts as the execution point for the system's financial logic. Receiving a message on their designated WhatsApp number is equivalent to "payment being made," which prompts the AI to synchronize all relevant financial data across the system 2.
+
+
+
+
+* Attendance: When guards send attendance messages, the AI drafts a confirmation for the Admin to approve before officially saving it to the database

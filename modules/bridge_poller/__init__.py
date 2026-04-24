@@ -1,0 +1,387 @@
+"""
+Fazle Core — Bridge SQLite Poller (Phase 3B)
+
+Polls both bridge SQLite message stores every 5 seconds.
+Pipeline: inbound SQLite row → LID→phone resolve → dedup check
+          → classify intent → Ollama reply → bridge send API → checkpoint
+
+Design choices:
+- Read-only SQLite access (uri=?mode=ro) — never writes to bridge DBs
+- Timestamp cursor stored in PostgreSQL `bridge_poller_cursor` (persists across restarts)
+- Dedup table `processed_bridge_messages` as safety net (handles cursor edge cases)
+- On fresh start (no cursor): begins from NOW() — avoids replying to historical messages
+- SQLite queries run in thread pool (sync) so asyncio loop is never blocked
+- Personal chats only: skips @g.us groups, @newsletter, status@broadcast
+"""
+
+import asyncio
+import logging
+import sqlite3
+from datetime import datetime, timezone, timedelta
+from typing import Optional
+
+from app.config import get_settings
+from app.database import execute, fetch_one, fetch_all, fetch_val
+from app.bridge import get_bridge1, get_bridge2
+from modules.message_router import process_message, get_primary_admin
+from modules.intent import classify as classify_intent
+
+_settings = get_settings()
+
+log = logging.getLogger("fazle.bridge_poller")
+
+POLL_INTERVAL = 5  # seconds
+REPLY_COOLDOWN = 60  # minimum seconds between replies to same number
+
+# Per-bridge SQLite paths — loaded from settings at startup
+BRIDGE_CONFIGS = [
+    {
+        "name": "bridge1",
+        "messages_db": "/home/azim/whatsapp-mcp/whatsapp-bridge/store/messages.db",
+        "whatsapp_db": "/home/azim/whatsapp-mcp/whatsapp-bridge/store/whatsapp.db",
+        "get_bridge": get_bridge1,
+    },
+    {
+        "name": "bridge2",
+        "messages_db": "/home/azim/whatsapp2/store/messages.db",
+        "whatsapp_db": "/home/azim/whatsapp2/store/whatsapp.db",
+        "get_bridge": get_bridge2,
+    },
+]
+
+# ── Schema ─────────────────────────────────────────────────────────────────────
+
+_INIT_SQL = """
+CREATE TABLE IF NOT EXISTS bridge_poller_cursor (
+    bridge      TEXT PRIMARY KEY,
+    last_ts     TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS processed_bridge_messages (
+    message_id  TEXT    NOT NULL,
+    bridge      TEXT    NOT NULL,
+    phone       TEXT,
+    processed_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (message_id, bridge)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pbm_bridge_ts
+    ON processed_bridge_messages (bridge, processed_at DESC);
+"""
+
+
+async def init_tables():
+    for stmt in _INIT_SQL.strip().split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            await execute(stmt)
+    log.info("Bridge poller tables ready")
+
+
+# ── Cursor helpers ─────────────────────────────────────────────────────────────
+
+async def _get_cursor(bridge: str) -> datetime:
+    """Return the last processed timestamp for this bridge.
+    Defaults to NOW() on first run — avoids blasting old messages."""
+    row = await fetch_one(
+        "SELECT last_ts FROM bridge_poller_cursor WHERE bridge = $1", bridge
+    )
+    if row and row["last_ts"]:
+        ts = row["last_ts"]
+        # asyncpg returns timezone-aware datetime already
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts
+    # First run — start from 5 minutes ago to catch very recent messages
+    now = datetime.now(timezone.utc) - timedelta(minutes=5)
+    await _set_cursor(bridge, now)
+    return now
+
+
+async def _set_cursor(bridge: str, ts: datetime):
+    await execute(
+        """
+        INSERT INTO bridge_poller_cursor (bridge, last_ts) VALUES ($1, $2)
+        ON CONFLICT (bridge) DO UPDATE SET last_ts = EXCLUDED.last_ts
+        """,
+        bridge, ts,
+    )
+
+
+# ── Dedup helpers ──────────────────────────────────────────────────────────────
+
+async def _is_processed(msg_id: str, bridge: str) -> bool:
+    val = await fetch_val(
+        "SELECT 1 FROM processed_bridge_messages WHERE message_id=$1 AND bridge=$2",
+        msg_id, bridge,
+    )
+    return val is not None
+
+
+async def _mark_processed(msg_id: str, bridge: str, phone: str):
+    await execute(
+        """
+        INSERT INTO processed_bridge_messages (message_id, bridge, phone)
+        VALUES ($1, $2, $3)
+        ON CONFLICT DO NOTHING
+        """,
+        msg_id, bridge, phone,
+    )
+
+
+# ── SQLite fetch (sync — runs in thread pool) ─────────────────────────────────
+
+def _load_lid_map(whatsapp_db: str) -> dict[str, str]:
+    """Load lid→phone mapping from whatsapp.db."""
+    lid_map: dict[str, str] = {}
+    try:
+        con = sqlite3.connect(f"file:{whatsapp_db}?mode=ro", uri=True, check_same_thread=False)
+        rows = con.execute("SELECT lid, pn FROM whatsmeow_lid_map").fetchall()
+        con.close()
+        for lid, pn in rows:
+            lid_map[str(lid)] = str(pn)
+    except Exception as e:
+        log.warning(f"LID map load error ({whatsapp_db}): {e}")
+    return lid_map
+
+
+def _fetch_new_messages(
+    messages_db: str,
+    whatsapp_db: str,
+    since_ts: datetime,
+) -> tuple[list[dict], datetime]:
+    """
+    Fetch inbound personal messages newer than since_ts from SQLite.
+    Returns (messages, max_ts_seen).
+    Runs synchronously — call via run_in_executor.
+    """
+    messages: list[dict] = []
+    max_ts = since_ts
+
+    try:
+        # Use read-only URI mode — never modify bridge DBs
+        con = sqlite3.connect(f"file:{messages_db}?mode=ro", uri=True, check_same_thread=False)
+        con.row_factory = sqlite3.Row
+
+        # Convert aware datetime to naive UTC string for SQLite comparison
+        # SQLite timestamps stored as '2026-04-23 06:44:29+02:00' (ISO with tz)
+        # Use datetime cast in SQLite to handle timezone-aware comparison
+        ts_iso = since_ts.isoformat()
+
+        rows = con.execute(
+            """
+            SELECT id, chat_jid, sender, content, timestamp, media_type, processed_text
+            FROM messages
+            WHERE is_from_me = 0
+              AND datetime(timestamp) > datetime(:since)
+              AND chat_jid NOT LIKE '%@newsletter'
+              AND chat_jid != 'status@broadcast'
+              AND chat_jid NOT LIKE '%@g.us'
+              AND (content IS NOT NULL OR processed_text IS NOT NULL)
+            ORDER BY datetime(timestamp) ASC
+            LIMIT 50
+            """,
+            {"since": ts_iso},
+        ).fetchall()
+        con.close()
+
+        lid_map = _load_lid_map(whatsapp_db)
+
+        for row in rows:
+            msg = dict(row)
+
+            # Resolve sender LID → phone
+            sender_lid = str(msg.get("sender", "")).split(":")[0].split("@")[0]
+            phone = lid_map.get(sender_lid, "")
+
+            if not phone:
+                # Fallback: try chat_jid if it's a s.whatsapp.net JID
+                chat_jid = msg.get("chat_jid", "")
+                if chat_jid.endswith("@s.whatsapp.net"):
+                    phone = chat_jid.replace("@s.whatsapp.net", "")
+                else:
+                    log.debug(f"Cannot resolve phone for LID={sender_lid}, jid={chat_jid} — skipping")
+                    continue
+
+            # Text: prefer content, fallback to processed_text (STT/OCR)
+            text = (msg.get("content") or msg.get("processed_text") or "").strip()
+            if not text:
+                continue
+
+            # Parse timestamp for cursor update
+            try:
+                ts_str = msg["timestamp"]
+                # Python 3.7+ fromisoformat handles +HH:MM offsets
+                ts_dt = datetime.fromisoformat(ts_str)
+                if ts_dt.tzinfo is None:
+                    ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+                if ts_dt > max_ts:
+                    max_ts = ts_dt
+            except Exception:
+                pass
+
+            msg["phone"] = phone
+            msg["text"] = text
+            messages.append(msg)
+
+    except Exception as e:
+        log.error(f"SQLite fetch error ({messages_db}): {e}")
+
+    return messages, max_ts
+
+
+# ── Reply cooldown (in-memory per process) ────────────────────────────────────
+_last_reply: dict[str, float] = {}  # phone → unix timestamp of last reply
+
+
+def _can_reply(phone: str) -> bool:
+    import time
+    last = _last_reply.get(phone, 0)
+    return (time.time() - last) >= REPLY_COOLDOWN
+
+
+def _record_reply(phone: str):
+    import time
+    _last_reply[phone] = time.time()
+
+
+# ── Main poll loop ─────────────────────────────────────────────────────────────
+
+async def _poll_bridge(config: dict):
+    bridge_name: str = config["name"]
+    messages_db: str = config["messages_db"]
+    whatsapp_db: str = config["whatsapp_db"]
+    get_bridge = config["get_bridge"]
+
+    log.info(f"[{bridge_name}] Poller started")
+
+    # Load cursor from DB
+    cursor = await _get_cursor(bridge_name)
+    log.info(f"[{bridge_name}] Starting from cursor: {cursor.isoformat()}")
+
+    while True:
+        try:
+            loop = asyncio.get_event_loop()
+            messages, new_cursor = await loop.run_in_executor(
+                None, _fetch_new_messages, messages_db, whatsapp_db, cursor
+            )
+
+            if messages:
+                log.info(f"[{bridge_name}] {len(messages)} new message(s) to process")
+
+            for msg in messages:
+                msg_id: str = msg["id"]
+                phone: str = msg["phone"]
+                text: str = msg["text"]
+
+                # Dedup check
+                if await _is_processed(msg_id, bridge_name):
+                    continue
+
+                # Mark processed immediately (prevents duplicate reply on crash-restart)
+                await _mark_processed(msg_id, bridge_name, phone)
+
+                log.info(f"[{bridge_name}] from={phone} text={text[:80]!r}")
+
+                # Save inbound
+                await _save_message(bridge_name, phone, text, "inbound")
+
+                # Cooldown check — don't spam the same person
+                if not _can_reply(phone):
+                    log.info(f"[{bridge_name}] Cooldown active for {phone}, skipping reply")
+                    continue
+
+                # Classify intent for draft storage (process_message re-classifies internally)
+                msg_intent = classify_intent(text)
+
+                # Full routing — admin commands, recruitment, escort, payment, KB, AI
+                reply, admin_note = await process_message(phone, text, bridge_name)
+
+                if reply:
+                    if _settings.auto_reply_enabled:
+                        bridge = get_bridge()
+                        sent = await bridge.send(phone, reply)
+                        if sent:
+                            _record_reply(phone)
+                            await _save_message(bridge_name, phone, reply, "outbound")
+                            log.info(f"[{bridge_name}] Replied to {phone}")
+                        else:
+                            log.warning(f"[{bridge_name}] Send failed to {phone}")
+                    else:
+                        log.warning(
+                            f"SAFE MODE: reply suppressed for {phone} ({bridge_name}). Saving draft."
+                        )
+                        await _save_draft(bridge_name, phone, reply, msg_intent)
+
+                if admin_note and _settings.auto_reply_enabled:
+                    await _notify_admin_bridge(admin_note)
+
+            # Advance cursor even if no messages (uses max_ts from fetch)
+            if new_cursor > cursor:
+                cursor = new_cursor
+                await _set_cursor(bridge_name, cursor)
+
+        except asyncio.CancelledError:
+            log.info(f"[{bridge_name}] Poller stopped")
+            break
+        except Exception as e:
+            log.exception(f"[{bridge_name}] Poll loop error: {e}")
+
+        await asyncio.sleep(POLL_INTERVAL)
+
+
+# ── Public API ─────────────────────────────────────────────────────────────────
+
+async def start_pollers():
+    """Initialize DB tables and launch background poll tasks for both bridges."""
+    await init_tables()
+    for config in BRIDGE_CONFIGS:
+        asyncio.create_task(_poll_bridge(config))
+    log.info("Bridge pollers running for bridge1 + bridge2")
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+async def _save_draft(source: str, recipient: str, reply_text: str, intent: str):
+    """Store a suppressed reply as a draft (safe mode)."""
+    try:
+        await execute(
+            """
+            INSERT INTO fazle_draft_replies
+                (source, recipient, reply_text, intent, draft_only, created_at)
+            VALUES ($1, $2, $3, $4, true, NOW())
+            """,
+            source, recipient, reply_text, intent,
+        )
+    except Exception as e:
+        log.warning(f"Draft save error: {e}")
+
+
+async def _save_message(source: str, sender: str, text: str, direction: str):
+    try:
+        await execute(
+            """
+            INSERT INTO wbom_whatsapp_messages
+                (sender_number, message_body, message_type, direction,
+                 platform, is_processed, contact_identifier)
+            VALUES ($1, $2, 'text', $3, $4, true, $1)
+            """,
+            sender, text, direction, source,
+        )
+    except Exception as e:
+        log.warning(f"Message save error: {e}")
+
+
+async def _notify_admin_bridge(notification: dict):
+    """Send admin notification via the appropriate bridge."""
+    admin_phone = notification.get("admin_phone", "")
+    text = notification.get("text", "")
+    bridge_src = notification.get("bridge", "bridge2")
+    if not admin_phone or not text:
+        return
+    try:
+        bridge = get_bridge1() if bridge_src == "bridge1" else get_bridge2()
+        await bridge.send(f"{admin_phone}@s.whatsapp.net", text)
+        log.info(f"[bridge_poller] admin notified: {admin_phone}")
+    except Exception as e:
+        log.error(f"[bridge_poller] admin notify error: {e}")

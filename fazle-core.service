@@ -1,0 +1,17 @@
+[Unit]
+Description=Fazle Core — WhatsApp AI Backend
+After=network.target docker.service
+
+[Service]
+Type=simple
+User=azim
+WorkingDirectory=/home/azim/fazle-core
+EnvironmentFile=/home/azim/fazle-core/.env
+ExecStart=/home/azim/fazle-core/venv/bin/python run.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/azim/fazle-core/logs/fazle-core.log
+StandardError=append:/home/azim/fazle-core/logs/fazle-core-error.log
+
+[Install]
+WantedBy=multi-user.target
