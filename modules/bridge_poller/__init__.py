@@ -369,7 +369,33 @@ async def start_pollers():
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 async def _save_draft(source: str, recipient: str, reply_text: str, intent: str):
-    """Store a suppressed reply as a draft (safe mode)."""
+    """Store a suppressed reply as a draft (safe mode).
+
+    B25 hotfix: passes through draft_quality gate first. Bad drafts are still
+    persisted (for audit) but with status='rejected_quality'/'rejected_fallback'
+    and meta.quality_reason — they never appear in the admin pending list.
+    """
+    from modules.draft_quality import check_draft_quality
+    from modules import observability as _obs
+    ok, reason = check_draft_quality(reply_text)
+    if not ok:
+        _obs.inc("drafts_rejected_total", labels={"reason": reason or "unknown", "source": source})
+        log.warning(f"[draft_quality] rejected source={source} recipient={recipient} reason={reason}")
+        try:
+            await execute(
+                """
+                INSERT INTO fazle_draft_replies
+                    (source, recipient, reply_text, intent, draft_only, status, created_at, meta)
+                VALUES ($1, $2, $3, $4, true, $5, NOW(),
+                        jsonb_build_object('quality_reason', $6, 'gate', 'b25'))
+                """,
+                source, recipient, reply_text or "", intent,
+                "rejected_fallback" if reason == "llm_fallback" else "rejected_quality",
+                reason or "unknown",
+            )
+        except Exception as e:
+            log.warning(f"Draft save (rejected) error: {e}")
+        return
     try:
         await execute(
             """

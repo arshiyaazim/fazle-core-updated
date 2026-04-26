@@ -144,7 +144,15 @@ async def generate_reply(
         except Exception as e:
             log.error(f"Ollama generate error: {type(e).__name__}: {e}")
 
-    return "আমি এই মুহূর্তে সাড়া দিতে পারছি না। অনুগ্রহ করে কিছুক্ষণ পরে আবার চেষ্টা করুন।"
+    # B25 hotfix: softer fallback. Quality gate (modules/draft_quality) matches
+    # this string EXACTLY and stores the draft as 'rejected_fallback' rather
+    # than queueing it for admin approval.
+    try:
+        from modules import observability as _obs
+        _obs.inc("llm_fallback_total")
+    except Exception:
+        pass
+    return "আপনার বার্তা পেয়েছি। একটু পরে বিস্তারিত জানাচ্ছি।"
 
 
 async def check_ollama_health() -> dict:
