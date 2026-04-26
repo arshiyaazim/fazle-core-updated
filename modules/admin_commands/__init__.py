@@ -24,9 +24,42 @@ from app.config import get_settings
 
 log = logging.getLogger("fazle.admin_cmd")
 
+# ── Bengali digit normalisation (Batch 25) ─────────────────────────────────────
+# Allow admins to type APPROVE ১৬৫. Map Bangla digits to ASCII before regex.
+_BN_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
+
+# ── Duplicate-command suppression (Batch 25, H1) ───────────────────────────────
+# In-process LRU keyed by sha1(text+admin_phone). 30s TTL, max 256 entries.
+# Single-worker assumption (uvicorn --workers 1). Documented in /memories.
+import hashlib as _hashlib
+import time as _time
+from collections import OrderedDict as _OrderedDict
+_DEDUP_TTL_S = 30.0
+_DEDUP_MAX = 256
+_dedup_cache: "_OrderedDict[str, float]" = _OrderedDict()
+
+def _dedup_seen(text: str, admin_phone: str) -> bool:
+    """Return True if this (text, admin) was processed within TTL. Updates cache."""
+    key = _hashlib.sha1(f"{admin_phone}|{text.strip()}".encode("utf-8")).hexdigest()
+    now = _time.time()
+    # Evict expired
+    while _dedup_cache:
+        k0, t0 = next(iter(_dedup_cache.items()))
+        if now - t0 > _DEDUP_TTL_S:
+            _dedup_cache.popitem(last=False)
+        else:
+            break
+    if key in _dedup_cache:
+        return True
+    _dedup_cache[key] = now
+    if len(_dedup_cache) > _DEDUP_MAX:
+        _dedup_cache.popitem(last=False)
+    return False
+
 # ── Command patterns ───────────────────────────────────────────────────────────
-_APPROVE_RE       = re.compile(r"^approve\s+(\d+)$", re.IGNORECASE)
-_REJECT_RE        = re.compile(r"^reject\s+(\d+)$", re.IGNORECASE)
+# H5: APPROVE / REJECT now accept one OR many IDs separated by spaces or commas.
+_APPROVE_RE       = re.compile(r"^approve\s+([\d,\s]+)$", re.IGNORECASE)
+_REJECT_RE        = re.compile(r"^reject\s+([\d,\s]+)$", re.IGNORECASE)
 _EDIT_RE          = re.compile(r"^edit\s+(\d+)\s+(.+)$", re.IGNORECASE | re.DOTALL)
 _PAID_RE          = re.compile(r"^paid\s+(\d+)\s+(\d[\d,]*)\s*(bkash|nagad|cash)?$", re.IGNORECASE)
 _ADVANCE_RE       = re.compile(r"^advance\s+(\d+)\s+(\d[\d,]*)\s*(bkash|nagad|cash)?$", re.IGNORECASE)
@@ -183,7 +216,17 @@ async def process_admin_command(text: str, admin_phone: str) -> str:
     NEVER sends to external parties — only returns text.
     Calling code decides whether to forward to accountant etc.
     """
-    t = text.strip()
+    # B25: normalise Bengali digits + dedup duplicate sends within TTL window
+    t = text.strip().translate(_BN_DIGITS)
+
+    if _dedup_seen(t, admin_phone):
+        try:
+            from modules import observability as _obs
+            _obs.inc("admin_command_dedup_total")
+        except Exception:
+            pass
+        log.info(f"[admin_cmd] dedup_suppressed admin={admin_phone} text={t[:60]!r}")
+        return ""  # silent drop, no double-process
 
     # ── Batch 19 — RBAC guard + audit ────────────────────────────────────────
     cmd_name = _classify_command(t)
@@ -219,11 +262,21 @@ async def process_admin_command(text: str, admin_phone: str) -> str:
 
     m = _APPROVE_RE.match(t)
     if m:
-        return await _cmd_approve(int(m.group(1)), admin_phone)
+        ids = _parse_id_list(m.group(1))
+        if not ids:
+            return "❌ কোনো বৈধ ID পাওয়া যায়নি। উদাহরণ: APPROVE 165 অথবা APPROVE 165,162,161"
+        if len(ids) == 1:
+            return await _cmd_approve(ids[0], admin_phone)
+        return await _cmd_approve_many(ids, admin_phone)
 
     m = _REJECT_RE.match(t)
     if m:
-        return await _cmd_reject(int(m.group(1)), admin_phone)
+        ids = _parse_id_list(m.group(1))
+        if not ids:
+            return "❌ কোনো বৈধ ID পাওয়া যায়নি। উদাহরণ: REJECT 167 অথবা REJECT 167,164"
+        if len(ids) == 1:
+            return await _cmd_reject(ids[0], admin_phone)
+        return await _cmd_reject_many(ids, admin_phone)
 
     m = _EDIT_RE.match(t)
     if m:
@@ -358,7 +411,74 @@ async def process_admin_command(text: str, admin_phone: str) -> str:
     if m:
         return await _cmd_user_apikey(m.group(1), admin_phone)
 
-    return "❌ অজানা কমান্ড। সাহায্যের জন্য: APPROVE <id> / REJECT <id> / PAID <id> <amount> <method>"
+    return (
+        "❌ কমান্ড বুঝিনি।\n\n"
+        "ব্যবহার:\n"
+        "  APPROVE <id>            — ড্রাফট পাঠান\n"
+        "  APPROVE <id> <id> ...   — একসাথে একাধিক\n"
+        "  REJECT <id>             — বাতিল\n"
+        "  EDIT <id> <নতুন বার্তা>\n"
+        "  PAID <id> <amount> <method>\n"
+        "  STATUS / DRAFTS         — পেন্ডিং তালিকা\n\n"
+        "বাংলা সংখ্যাও কাজ করে: APPROVE ১৬৫"
+    )
+
+
+# ── Multi-ID helpers (Batch 25, H5) ─────────────────────────────────────────────
+import re as _re
+
+_ID_SPLIT = _re.compile(r"[,\s]+")
+
+
+def _parse_id_list(raw: str) -> list[int]:
+    """Parse 'APPROVE/REJECT' tail like '165 162,161' → [165, 162, 161]. Dedups."""
+    seen: set[int] = set()
+    out: list[int] = []
+    for tok in _ID_SPLIT.split(raw.strip()):
+        if not tok:
+            continue
+        try:
+            n = int(tok)
+        except ValueError:
+            continue
+        if n in seen:
+            continue
+        seen.add(n)
+        out.append(n)
+    return out
+
+
+async def _cmd_approve_many(ids: list[int], admin_phone: str) -> str:
+    lines = [f"📦 Bulk APPROVE — {len(ids)} ড্রাফট"]
+    sent_ok = 0
+    for did in ids:
+        try:
+            res = await _cmd_approve(did, admin_phone)
+            if res.startswith("✅"):
+                sent_ok += 1
+            # Compress per-line response (first line only)
+            first = res.splitlines()[0] if res else ""
+            lines.append(f"  #{did}: {first[:90]}")
+        except Exception as e:
+            lines.append(f"  #{did}: ❌ {e}")
+    lines.append(f"\nফলাফল: {sent_ok}/{len(ids)} পাঠানো হয়েছে।")
+    return "\n".join(lines)
+
+
+async def _cmd_reject_many(ids: list[int], admin_phone: str) -> str:
+    lines = [f"🚫 Bulk REJECT — {len(ids)} ড্রাফট"]
+    rejected = 0
+    for did in ids:
+        try:
+            res = await _cmd_reject(did, admin_phone)
+            if res.startswith("🚫"):
+                rejected += 1
+            first = res.splitlines()[0] if res else ""
+            lines.append(f"  #{did}: {first[:90]}")
+        except Exception as e:
+            lines.append(f"  #{did}: ❌ {e}")
+    lines.append(f"\nফলাফল: {rejected}/{len(ids)} বাতিল।")
+    return "\n".join(lines)
 
 
 # ── Command implementations ────────────────────────────────────────────────────
