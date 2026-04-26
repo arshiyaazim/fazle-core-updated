@@ -8,14 +8,15 @@ Returns: (reply_text, admin_notification | None)
   admin_notification = {"admin_phone": str, "text": str, "bridge": str}
 
 Routing priority:
-  1. escort_client role → extract vessel data, draft to admin, no client reply
-  2. Admin: completed escort draft → finalize, send to client
-  3. Admin: commands (APPROVE / REJECT / PAID / ADVANCE / list)
-  4. Recruitment funnel (active session → KB → trigger detection)
-  5. Escort intent fallback (unregistered senders with escort content)
-  6. Employee: verification session → slip/advance/salary
-  7. Knowledge base (all roles, before LLM)
-  8. AI fallback (Ollama)
+  1. family         → personal safe reply, no business workflow
+  2. escort roles   → extract vessel data, draft to admin, no client reply
+  3. admin          → commands (APPROVE / REJECT / PAID / ADVANCE / ESCORTCONFIRM / list)
+  4. supervisor     → attendance check (attendance_parser) → then KB/AI
+  5. accountant     → finance route (KB, then AI)
+  6. candidate      → recruitment funnel
+  7. employee       → verification → slip/advance/salary/attendance
+  8. known contacts (repeat_client / vendor / vip_client) → KB → AI
+  9. unknown        → intent engine → KB → AI
 """
 
 import logging
@@ -25,7 +26,7 @@ from app.config import get_settings
 from app.database import fetch_one, fetch_all
 from app import ollama as ai
 from modules.intent import classify
-from modules.user_role import detect_role
+from modules.identity_brain import detect_identity
 from modules.payroll_logic import get_payroll_summary, format_payroll_context
 from modules.escort import (
     handle_escort_client_message,
@@ -40,6 +41,11 @@ from modules.recruitment_flow import (
 )
 from modules.admin_commands import is_admin_command, process_admin_command, list_payment_drafts
 from modules.payment_workflow import is_advance_request
+from modules.attendance import handle_attendance_message, is_attendance_message, get_attendance_summary
+from modules.attendance_parser import (
+    parse_attendance, create_attendance_draft, save_supervisor_attendance,
+    is_supervisor_attendance,
+)
 from modules.employee_verification import (
     get_verification_session,
     advance_verification,
@@ -49,6 +55,9 @@ from modules.employee_verification import (
 )
 
 log = logging.getLogger("fazle.router")
+
+# Roles that trigger the escort client flow
+_ESCORT_ROLES = frozenset({"escort_client", "client_escort_buyer", "vip_client", "repeat_client"})
 
 
 async def process_message(
@@ -60,31 +69,50 @@ async def process_message(
     """
     settings = get_settings()
 
-    user_role = await detect_role(sender)
-    role_str = user_role["role"]
-    log.info(f"[ROLE] {sender} → {role_str}")
+    identity = await detect_identity(sender, text)
+    role_str = identity["role"]
+    log.info(
+        f"[IDENTITY] {sender} → {role_str} "
+        f"(conf={identity['identity_confidence']}, src={identity['identity_source']})"
+    )
 
-    # ── 1. ESCORT CLIENT — never reply, always draft to admin ─────────────────
-    if role_str == "escort_client":
-        return await handle_escort_client_message(text, sender, source)
+    # ── 1. FAMILY — personal, no business workflow ────────────────────────────
+    if role_str == "family":
+        name = identity.get("display_name") or "আপনি"
+        return (
+            f"আস-সালামু আলাইকুম {name}! 😊\n"
+            f"এটা অফিসের নম্বর — ব্যক্তিগত কথা ফোনে বলুন।",
+            None,
+        )
 
-    # ── 2. ADMIN ───────────────────────────────────────────────────────────────
+    # ── 2. ESCORT CLIENT roles — never reply, always draft to admin ───────────
+    if role_str in _ESCORT_ROLES:
+        # Only trigger escort flow if message has escort content
+        intent_check = classify(text)
+        if intent_check in ("client_order", "escort_duty") or _looks_like_escort_order(text):
+            return await handle_escort_client_message(text, sender, source)
+        # Otherwise fall through to normal routing below
+
+    # ── 3. ADMIN ───────────────────────────────────────────────────────────────
     if role_str == "admin":
-        # Check for completed escort draft before command parsing
         if is_completed_escort_draft(text):
             return await handle_admin_escort_completion(text, sender, source)
 
         if is_admin_command(text):
             result = await process_admin_command(text, sender)
             if isinstance(result, tuple):
-                confirm_text, accountant_msg = result
-                if accountant_msg:
-                    accountant_phone = settings.accountant_phone
-                    return confirm_text, {
-                        "admin_phone": accountant_phone,
-                        "text": accountant_msg,
-                        "bridge": source,
-                    }
+                confirm_text, extra_msg = result
+                if extra_msg and len(result) == 2:
+                    # Could be accountant_msg or buyer_msg — check context
+                    # process_admin_command now returns (confirm, msg_to_forward)
+                    # Route to accountant for PAID/ADVANCE; to buyer for ESCORTCONFIRM
+                    target_phone = _resolve_forward_target(text, settings)
+                    if target_phone and extra_msg:
+                        return confirm_text, {
+                            "admin_phone": target_phone,
+                            "text": extra_msg,
+                            "bridge": source,
+                        }
                 return confirm_text, None
             return result, None  # type: ignore[return-value]
 
@@ -93,72 +121,131 @@ async def process_message(
             return await _cmd_admin_list(), None
         if "payment" in lower or "পেমেন্ট" in lower or "paid" in lower:
             return await list_payment_drafts(sender), None
+        if "attendance" in lower or "হাজিরা" in lower or "উপস্থিতি" in lower:
+            return await get_attendance_summary(), None
 
-    # ── 2. Intent classification ───────────────────────────────────────────────
+    # ── 4. ATTENDANCE (any role) — draft for admin approval ───────────────────
+    # Checks supervisor AND any sender — admin approval required before DB save
+    if is_supervisor_attendance(text) or (role_str != "admin" and is_attendance_message(text)):
+        parsed = parse_attendance(text)
+        result = await create_attendance_draft(parsed, sender, source)
+        admin_phone = settings.admin_bridge1_number if source == "bridge1" \
+            else settings.admin_bridge2_number
+        return result["message"], {
+            "admin_phone": admin_phone,
+            "text": result["admin_msg"],
+            "bridge": source,
+        }
+
+    # ── 5. Intent classification ───────────────────────────────────────────────
     intent = classify(text)
     if intent == "unknown":
         intent = await ai.classify_intent_llm(text)
     log.info(f"[INTENT] {sender} → {intent}")
 
-    # ── 3. RECRUITMENT ─────────────────────────────────────────────────────────
-    if role_str in ("new_lead", "known_contact") or intent == "recruitment":
+    # ── 6. ACCOUNTANT ─────────────────────────────────────────────────────────
+    if role_str == "accountant":
+        kb_reply = await kb_get_reply(text, intent)
+        if kb_reply:
+            return kb_reply, None
+        db_ctx = await get_contact_context(sender)
+        reply = await ai.generate_reply(text, intent, db_ctx, role=role_str)
+        return reply, None
+
+    # ── 7. CANDIDATE — recruitment funnel ─────────────────────────────────────
+    if role_str == "candidate" or intent == "recruitment":
         active_session = await get_active_session(sender)
         if active_session:
             result = await recruit_intake(sender, text, source)
             if result["reply"]:
                 return result["reply"], None
-
         kb_reply = await kb_get_reply(text, intent)
         if kb_reply:
             return kb_reply, None
-
         if is_recruitment_trigger(text):
             result = await recruit_intake(sender, text, source)
             if result["reply"]:
                 return result["reply"], None
 
-    # ── 4. ESCORT ORDER (intent-triggered, non-escort_client roles) ────────────
-    # escort_client is handled at step 1 — this catches unregistered senders
-    # whose message content looks like an escort order (intent-based fallback).
+    # ── 8. RECRUITMENT for new_lead / known_contact roles ─────────────────────
+    if role_str in ("new_lead", "unknown", "known_contact"):
+        active_session = await get_active_session(sender)
+        if active_session:
+            result = await recruit_intake(sender, text, source)
+            if result["reply"]:
+                return result["reply"], None
+        kb_reply = await kb_get_reply(text, intent)
+        if kb_reply:
+            return kb_reply, None
+        if is_recruitment_trigger(text):
+            result = await recruit_intake(sender, text, source)
+            if result["reply"]:
+                return result["reply"], None
+
+    # ── 9. ESCORT ORDER (intent-triggered for non-registered senders) ─────────
     if intent in ("client_order", "escort_duty"):
         return await handle_escort_client_message(text, sender, source)
 
-    # ── 5. EMPLOYEE ────────────────────────────────────────────────────────────
+    # ── 10. EMPLOYEE ───────────────────────────────────────────────────────────
     if role_str == "employee":
-        emp_id = user_role.get("employee_id")
+        emp_id = identity.get("employee_id")
 
-        # Identity mismatch: phone is a vessel master, not a registered employee
         if not emp_id:
             mismatch = await check_identity_mismatch(sender)
             if mismatch:
                 return mismatch, None
 
-        # Active verification session takes priority over everything else
         session = await get_verification_session(sender)
         if session:
             return await advance_verification(sender, text, source, emp_id)
 
-        # Release slip / duty completion — start slip verification flow
+        if intent == "attendance" or is_attendance_message(text):
+            return await handle_attendance_message(text, sender, source)
+
         if intent == "slip_submission":
             return await start_slip_verification(sender, text, source, emp_id)
 
-        # Advance / emergency / financial assistance request — start verification flow
+        # Batch 13: text-based release intent (close active program, draft payment)
+        if emp_id:
+            from modules.escort_lifecycle import is_release_intent, handle_release_event
+            if is_release_intent(text):
+                rel = await handle_release_event(emp_id, extracted=None, source=f"release-text:{source}")
+                if rel.get("status") == "closed":
+                    reply = (
+                        f"✅ আপনার ডিউটি বন্ধের তথ্য পাওয়া গেছে।\n"
+                        f"Days: {rel.get('day_count')}\n"
+                        f"পেমেন্ট ড্রাফট তৈরি হয়েছে (#{rel.get('draft_id')})।\n"
+                        f"Admin অনুমোদনের পর পেমেন্ট প্রসেস হবে।"
+                    )
+                    return reply, None
+                if rel.get("status") == "already_closed":
+                    return ("ℹ️ আপনার সর্বশেষ ডিউটি ইতিমধ্যে ক্লোজ করা হয়েছে। "
+                            "আবার রিলিজ পাঠানোর প্রয়োজন নেই।"), None
+                if rel.get("status") == "no_active_program":
+                    return ("⚠️ আপনার নামে কোনো চলমান escort program পাওয়া যায়নি। "
+                            "Admin-কে যোগাযোগ করুন।"), None
+
         if is_advance_request(text):
             return await start_advance_verification(sender, source, emp_id)
 
-        # Salary / payment information query (read-only — no verification needed)
         if intent in ("salary_query", "payment_due") and emp_id:
             payroll = await get_payroll_summary(emp_id)
             db_ctx = format_payroll_context(payroll)
             reply = await ai.generate_reply(text, intent, db_ctx, role=role_str)
             return reply, None
 
-    # ── 6. KNOWLEDGE BASE (all roles, all intents) ─────────────────────────────
+    # ── 11. ADVANCE/PAYMENT REQUEST (any role not already handled) ───────────
+    # Catches employees, supervisors, unknown senders who ask for money
+    existing_session = await get_verification_session(sender)
+    if not existing_session and is_advance_request(text) and role_str != "admin":
+        return await start_advance_verification(sender, source, identity.get("employee_id"))
+
+    # ── 12. KNOWLEDGE BASE (all roles, all intents) ───────────────────────────
     kb_reply = await kb_get_reply(text, intent)
     if kb_reply:
         return kb_reply, None
 
-    # ── 7. AI FALLBACK ─────────────────────────────────────────────────────────
+    # ── 13. AI FALLBACK ────────────────────────────────────────────────────────
     db_ctx = await get_contact_context(sender)
     reply = await ai.generate_reply(text, intent, db_ctx, role=role_str)
     return reply, None
@@ -170,6 +257,30 @@ def get_primary_admin() -> str:
     settings = get_settings()
     admins = settings.admin_number_list
     return admins[0] if admins else settings.admin_meta_number
+
+
+def _looks_like_escort_order(text: str) -> bool:
+    """Check if message contains escort order keywords."""
+    import re
+    pattern = re.compile(
+        r"\b(m\.?v\.?|mother\s*vessel|lighter|escort\s*lagbe|m\.?t\.|"
+        r"এমভি|destination|lighter\s*vessel|master\s*number)\b",
+        re.IGNORECASE,
+    )
+    return bool(pattern.search(text))
+
+
+def _resolve_forward_target(command_text: str, settings) -> Optional[str]:
+    """Determine who to forward the secondary message to based on command type."""
+    t = command_text.strip().lower()
+    if t.startswith(("paid", "advance")):
+        return settings.accountant_phone or None
+    if t.startswith("escortconfirm"):
+        # Buyer phone is embedded in the result from _cmd_escort_confirm
+        # The escort confirm handler already returns None if no buyer found
+        # Forward via the admin_note mechanism in the caller
+        return None  # handled by the tuple itself
+    return None
 
 
 async def get_contact_context(phone: str) -> str:

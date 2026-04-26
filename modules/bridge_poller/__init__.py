@@ -217,8 +217,8 @@ def _fetch_new_messages(
                     ts_dt = ts_dt.replace(tzinfo=timezone.utc)
                 if ts_dt > max_ts:
                     max_ts = ts_dt
-            except Exception:
-                pass
+            except Exception as _ts_err:
+                log.debug(f"ts parse error for msg {msg.get('id')}: {_ts_err}")
 
             msg["phone"] = phone
             msg["text"] = text
@@ -283,8 +283,15 @@ async def _poll_bridge(config: dict):
 
                 log.info(f"[{bridge_name}] from={phone} text={text[:80]!r}")
 
-                # Save inbound
-                await _save_message(bridge_name, phone, text, "inbound")
+                # Detect identity before routing (for logging)
+                from modules.identity_brain import detect_identity
+                identity = await detect_identity(phone, text)
+                id_role = identity["identity_role"]
+                id_conf = identity["identity_confidence"]
+
+                # Save inbound with identity metadata
+                await _save_message(bridge_name, phone, text, "inbound",
+                                    identity_role=id_role, identity_confidence=id_conf)
 
                 # Cooldown check — don't spam the same person
                 if not _can_reply(phone):
@@ -303,7 +310,9 @@ async def _poll_bridge(config: dict):
                         sent = await bridge.send(phone, reply)
                         if sent:
                             _record_reply(phone)
-                            await _save_message(bridge_name, phone, reply, "outbound")
+                            await _save_message(bridge_name, phone, reply, "outbound",
+                                                identity_role=id_role, identity_confidence=id_conf,
+                                                workflow=msg_intent)
                             log.info(f"[{bridge_name}] Replied to {phone}")
                         else:
                             log.warning(f"[{bridge_name}] Send failed to {phone}")
@@ -320,6 +329,23 @@ async def _poll_bridge(config: dict):
             if new_cursor > cursor:
                 cursor = new_cursor
                 await _set_cursor(bridge_name, cursor)
+
+            # Heartbeat (B15.3)
+            try:
+                from app.database import execute as _exec
+                await _exec(
+                    """INSERT INTO fazle_service_heartbeats (service, last_seen, last_message_id, queue_depth)
+                       VALUES ($1, NOW(), $2, $3)
+                       ON CONFLICT (service)
+                       DO UPDATE SET last_seen = NOW(),
+                                     last_message_id = EXCLUDED.last_message_id,
+                                     queue_depth = EXCLUDED.queue_depth""",
+                    f"bridge_poller:{bridge_name}",
+                    (messages[-1]["id"] if messages else None),
+                    len(messages),
+                )
+            except Exception as _hb_err:
+                log.warning(f"[{bridge_name}] heartbeat write failed: {_hb_err}")
 
         except asyncio.CancelledError:
             log.info(f"[{bridge_name}] Poller stopped")
@@ -348,8 +374,8 @@ async def _save_draft(source: str, recipient: str, reply_text: str, intent: str)
         await execute(
             """
             INSERT INTO fazle_draft_replies
-                (source, recipient, reply_text, intent, draft_only, created_at)
-            VALUES ($1, $2, $3, $4, true, NOW())
+                (source, recipient, reply_text, intent, draft_only, status, created_at)
+            VALUES ($1, $2, $3, $4, true, 'pending', NOW())
             """,
             source, recipient, reply_text, intent,
         )
@@ -357,16 +383,26 @@ async def _save_draft(source: str, recipient: str, reply_text: str, intent: str)
         log.warning(f"Draft save error: {e}")
 
 
-async def _save_message(source: str, sender: str, text: str, direction: str):
+async def _save_message(
+    source: str,
+    sender: str,
+    text: str,
+    direction: str,
+    identity_role: str = "",
+    identity_confidence: int = 0,
+    workflow: str = "",
+):
     try:
         await execute(
             """
             INSERT INTO wbom_whatsapp_messages
                 (sender_number, message_body, message_type, direction,
-                 platform, is_processed, contact_identifier)
-            VALUES ($1, $2, 'text', $3, $4, true, $1)
+                 platform, is_processed, contact_identifier,
+                 identity_role, identity_confidence, workflow_triggered)
+            VALUES ($1, $2, 'text', $3, $4, true, $1, $5, $6, $7)
             """,
             sender, text, direction, source,
+            identity_role or None, identity_confidence or None, workflow or None,
         )
     except Exception as e:
         log.warning(f"Message save error: {e}")

@@ -42,6 +42,7 @@ async def create_escort_payment_draft(
     employee_id: int,
     escort_program_id: Optional[int] = None,
     override_days: Optional[float] = None,
+    source: str = "bridge1",
 ) -> dict:
     """
     Create a payment draft after escort duty release.
@@ -63,17 +64,18 @@ async def create_escort_payment_draft(
         # Try to get program info
         if escort_program_id:
             prog = await fetch_one(
-                """SELECT program_id, program_date, vessel_name, release_date,
-                          completion_date
+                """SELECT program_id, program_date, mother_vessel, end_date,
+                          completion_time
                    FROM wbom_escort_programs WHERE program_id = $1""",
                 escort_program_id,
             )
             if prog:
-                prog_name = prog.get("vessel_name") or f"Program #{escort_program_id}"
+                prog_name = prog.get("mother_vessel") or f"Program #{escort_program_id}"
                 if duty_days is None:
                     # Calculate from dates
                     start = prog.get("program_date")
-                    end   = prog.get("release_date") or prog.get("completion_date")
+                    ct = prog.get("completion_time")
+                    end = prog.get("end_date") or (ct.date() if ct else None)
                     if start and end:
                         if hasattr(start, "date"):
                             start = start.date()
@@ -94,7 +96,7 @@ async def create_escort_payment_draft(
             """SELECT COALESCE(SUM(amount), 0)
                FROM wbom_cash_transactions
                WHERE employee_id = $1 AND transaction_type = 'advance'
-                 AND created_at >= NOW() - INTERVAL '60 days'""",
+                 AND transaction_date >= CURRENT_DATE - INTERVAL '60 days'""",
             employee_id,
         ) or 0.0
         net_payable = max(float(expected) - float(advances), 0)
@@ -118,11 +120,11 @@ async def create_escort_payment_draft(
             """INSERT INTO fazle_payment_drafts
                    (draft_type, employee_id, employee_name, employee_mobile,
                     escort_program_id, duty_days, expected_amount, status, draft_text,
-                    created_at, updated_at)
-               VALUES ('escort_payment', $1, $2, $3, $4, $5, $6, 'pending', $7, NOW(), NOW())
+                    source, updated_at)
+               VALUES ('escort_payment', $1, $2, $3, $4, $5, $6, 'pending', $7, $8, NOW())
                RETURNING id""",
             employee_id, emp["employee_name"], emp.get("employee_mobile"),
-            escort_program_id, duty_days, net_payable, draft_text,
+            escort_program_id, duty_days, net_payable, draft_text, source,
         )
 
         if draft_id:
@@ -152,6 +154,7 @@ async def create_escort_payment_draft(
 async def create_advance_request_draft(
     employee_id: int,
     requested_amount: Optional[float] = None,
+    source: str = "bridge1",
 ) -> dict:
     """
     Create an advance payment approval draft for admin.
@@ -171,7 +174,7 @@ async def create_advance_request_draft(
         paid_this_month = await fetch_val(
             """SELECT COALESCE(SUM(amount), 0)
                FROM wbom_cash_transactions
-               WHERE employee_id = $1 AND created_at >= $2""",
+               WHERE employee_id = $1 AND transaction_date >= $2""",
             employee_id, month_start,
         ) or 0.0
 
@@ -201,11 +204,11 @@ async def create_advance_request_draft(
         draft_id = await fetch_val(
             """INSERT INTO fazle_payment_drafts
                    (draft_type, employee_id, employee_name, employee_mobile,
-                    expected_amount, status, draft_text, created_at, updated_at)
-               VALUES ('advance', $1, $2, $3, $4, 'pending', $5, NOW(), NOW())
+                    expected_amount, status, draft_text, source, updated_at)
+               VALUES ('advance', $1, $2, $3, $4, 'pending', $5, $6, NOW())
                RETURNING id""",
             employee_id, emp["employee_name"], emp.get("employee_mobile"),
-            requested_amount or 0, draft_text,
+            requested_amount or 0, draft_text, source,
         )
 
         if draft_id:
@@ -249,8 +252,8 @@ async def finalize_payment(draft_id: int, approved_amount: float, method: str) -
         await execute(
             """INSERT INTO wbom_cash_transactions
                    (employee_id, amount, transaction_type, payment_method,
-                    notes, created_at)
-               VALUES ($1, $2, $3, $4, $5, NOW())""",
+                    transaction_date, remarks)
+               VALUES ($1, $2, $3, $4, CURRENT_DATE, $5)""",
             draft.get("employee_id"), approved_amount, txn_type, method,
             f"Draft #{draft_id} — approved by admin",
         )

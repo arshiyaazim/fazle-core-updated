@@ -22,6 +22,7 @@ log = logging.getLogger("fazle.user_role")
 # Admin phones (set in .env as comma-separated list)
 # Loaded lazily from settings on first call
 _admin_phones: set[str] | None = None
+_accountant_phone: str | None = None
 
 
 def _get_admin_phones() -> set[str]:
@@ -30,10 +31,28 @@ def _get_admin_phones() -> set[str]:
         try:
             from app.config import get_settings
             s = get_settings()
-            _admin_phones = set(normalize_phone(p) for p in s.admin_number_list if p)
+            phones = set(normalize_phone(p) for p in s.admin_number_list if p)
+            # Also add bridge-specific admin numbers
+            for attr in ("admin_meta_number", "admin_bridge1_number", "admin_bridge2_number"):
+                v = getattr(s, attr, "")
+                if v:
+                    phones.add(normalize_phone(v))
+            _admin_phones = phones
         except Exception:
             _admin_phones = set()
     return _admin_phones
+
+
+def _get_accountant_phone() -> str:
+    global _accountant_phone
+    if _accountant_phone is None:
+        try:
+            from app.config import get_settings
+            s = get_settings()
+            _accountant_phone = normalize_phone(s.accountant_phone) if s.accountant_phone else ""
+        except Exception:
+            _accountant_phone = ""
+    return _accountant_phone
 
 
 def normalize_phone(phone: str) -> str:
@@ -94,6 +113,24 @@ async def detect_role(raw_phone: str) -> UserRole:
             confidence=1.0,
         )
 
+    # 1b. Accountant check (from settings.accountant_phone)
+    acct_phone = _get_accountant_phone()
+    if acct_phone and phone == acct_phone:
+        emp = await _lookup_employee(phone)
+        return UserRole(
+            role="accountant",
+            employee_id=emp.get("employee_id") if emp else None,
+            employee_name=emp.get("employee_name") if emp else None,
+            designation=emp.get("designation") if emp else "Accountant",
+            basic_salary=float(emp["basic_salary"]) if emp and emp.get("basic_salary") else None,
+            bkash_number=emp.get("bkash_number") if emp else None,
+            contact_id=None,
+            display_name=None,
+            company_name=None,
+            relation_name="Accountant",
+            confidence=1.0,
+        )
+
     # 2. Employee lookup
     emp = await _lookup_employee(phone)
     if emp:
@@ -149,6 +186,8 @@ def _map_relation_to_role(relation: str) -> str:
         return "partner"
     if r == "employee":
         return "employee"
+    if r in ("accountant", "accounts"):
+        return "accountant"
     return "known_contact"
 
 

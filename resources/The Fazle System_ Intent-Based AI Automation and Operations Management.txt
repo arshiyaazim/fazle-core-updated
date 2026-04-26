@@ -3,6 +3,34 @@
 One of the most complex drafting tasks involves processing security orders for ships.
 * Data Extraction: The AI analyzes incoming messages to identify the Mother Vessel, the Lighter Vessel, and the Master's mobile number 3, 4. It distinguishes between vessels by looking for specific keywords (like "Atlas 1" or "Atlas 2") and the presence of mobile numbers associated with the Lighter Vessel 3, 4.
 
+Created [](file:///home/azim/fazle-core/scripts/git-sprint.sh)
+
+Sent `cd /home/azim/fazle-core && chmod +x scripts/git-sprint.sh && git config --lo...` to terminal
+
+Checked terminal output
+
+Done. Created automation:
+
+**1. Shell Script** — scripts/git-sprint.sh
+   - Interactive `git add -p` (stage changes selectively)
+   - Commit with custom message
+   - Push to `origin/develop`
+   - Usage: `./scripts/git-sprint.sh "Your commit message"`
+
+**2. Git Aliases** (saved in local config):
+   - **`git sprint`** — Full workflow with interactive staging
+     ```bash
+     git sprint "Fix poller routing into unified processor"
+     ```
+   
+   - **`git quick-push`** — Non-interactive (stages all + commit + push)
+     ```bash
+     git quick-push
+     ```
+
+Both aliases default to branch `develop` with safety checks. Use `git sprint` for deliberate staged commits; use `git quick-push` for quick snapshots.You've used 51% of your weekly rate limit. Your weekly rate limit will reset on April 27 at 2:00 AM. [Learn More](https://aka.ms/github-copilot-rate-limit-error)
+
+Made changes.
 
 The Fazle System's AI distinguishes between a Mother Vessel and a Lighter Vessel by analyzing specific characteristics and contextual clues within a client's message.
 The primary differences in how the AI detects them are as follows:

@@ -3,17 +3,82 @@ Fazle Core — Bridge Client
 Wraps HTTP calls to both QR WhatsApp bridges.
 """
 import logging
+import os
+import time
 import httpx
 from app.config import get_settings
 
 log = logging.getLogger("fazle.bridge")
 
 
+class BridgeSendError(Exception):
+    """Raised by BridgeClient.send_strict on any non-2xx or transport failure."""
+
+
+class CircuitBreaker:
+    """Per-bridge breaker. CLOSED → OPEN after N failures in window. HALF_OPEN allows 1 probe."""
+
+    def __init__(self, label: str, failure_threshold: int = 5,
+                 window_seconds: int = 60, open_seconds: int = 60):
+        self.label = label
+        self.failure_threshold = failure_threshold
+        self.window_seconds = window_seconds
+        self.open_seconds = open_seconds
+        self._failures: list[float] = []
+        self._opened_at: float | None = None
+        self._half_open_in_flight = False
+
+    def state(self) -> str:
+        if self._opened_at is None:
+            return "closed"
+        if time.time() - self._opened_at >= self.open_seconds:
+            return "half_open"
+        return "open"
+
+    def allow(self) -> bool:
+        st = self.state()
+        if st == "closed":
+            return True
+        if st == "open":
+            return False
+        # half_open: allow exactly one probe
+        if self._half_open_in_flight:
+            return False
+        self._half_open_in_flight = True
+        return True
+
+    def record_success(self) -> None:
+        if self._opened_at is not None:
+            log.info(f"[breaker:{self.label}] closing after success")
+        self._failures.clear()
+        self._opened_at = None
+        self._half_open_in_flight = False
+
+    def record_failure(self) -> bool:
+        """Returns True if the breaker just opened on this failure."""
+        now = time.time()
+        # half_open failure → re-open
+        if self._opened_at is not None:
+            self._opened_at = now
+            self._half_open_in_flight = False
+            return False  # already-open re-arm; not 'just opened'
+        # CLOSED state: trim window
+        self._failures = [t for t in self._failures if now - t < self.window_seconds]
+        self._failures.append(now)
+        if len(self._failures) >= self.failure_threshold:
+            self._opened_at = now
+            log.warning(f"[breaker:{self.label}] OPEN ({len(self._failures)} fails in {self.window_seconds}s)")
+            return True
+        return False
+
+
 class BridgeClient:
     def __init__(self, base_url: str, label: str):
         self.base_url = base_url.rstrip("/")
         self.label = label
-        self._client = httpx.AsyncClient(timeout=15.0)
+        timeout = float(os.getenv("OUTBOUND_BRIDGE_TIMEOUT_S", "10"))
+        self._client = httpx.AsyncClient(timeout=timeout)
+        self.breaker = CircuitBreaker(label)
 
     async def _set_send(self, allow: bool):
         try:
@@ -23,10 +88,19 @@ class BridgeClient:
                 timeout=5.0,
             )
         except Exception:
-            pass
+            pass  # nosec: optional permission toggle, real send still attempted
 
     async def send(self, jid: str, text: str) -> bool:
-        """Send a single message. Auto-toggles send permission."""
+        """Best-effort send (legacy). Returns bool. Use send_strict for queue."""
+        try:
+            await self.send_strict(jid, text)
+            return True
+        except BridgeSendError as e:
+            log.error(f"[{self.label}] send error to {jid}: {e}")
+            return False
+
+    async def send_strict(self, jid: str, text: str) -> None:
+        """Strict send: raises BridgeSendError on any failure. Used by outbound queue."""
         if not jid.endswith("@s.whatsapp.net") and not jid.endswith("@g.us"):
             jid = jid + "@s.whatsapp.net"
         try:
@@ -35,10 +109,10 @@ class BridgeClient:
                 f"{self.base_url}/api/send",
                 json={"recipient": jid, "message": text},
             )
-            return r.status_code == 200
-        except Exception as e:
-            log.error(f"[{self.label}] send error to {jid}: {e}")
-            return False
+            if r.status_code != 200:
+                raise BridgeSendError(f"http {r.status_code}: {r.text[:200]}")
+        except httpx.HTTPError as e:
+            raise BridgeSendError(f"transport: {e}") from e
         finally:
             await self._set_send(False)
 

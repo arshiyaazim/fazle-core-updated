@@ -1,6 +1,19 @@
 # Fazle Core — WhatsApp AI Operations Engine
 
+**Version:** v1.0 (B11 → B24 complete) · **Status:** ready for launch
+· **Repo path:** `/home/azim/fazle-core` · **README path:** `/home/azim/fazle-core/README.md`
+
 A production FastAPI backend running on VPS that bridges WhatsApp conversations into structured business workflows for HR, Payroll, and Escort Operations.
+
+## Documentation
+
+| Doc | Purpose |
+|---|---|
+| [docs/V1_LAUNCH_CHECKLIST.md](docs/V1_LAUNCH_CHECKLIST.md) | **Tick before flipping `AUTO_REPLY_ENABLED=true`** — security, backup, daily routine, owner dashboard, monetization |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System diagram, components, data flow, modules |
+| [docs/API.md](docs/API.md) | Every HTTP endpoint with auth + examples |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Deploy, restart, backup, monitor, troubleshoot |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Versioning model, batch ledger B11 → B24, candidate batches B25 → B34 |
 
 ## Overview
 
@@ -86,3 +99,28 @@ git checkout main
 git merge develop
 sudo systemctl restart fazle-core.service
 ```
+
+## Versioning
+
+Fazle Core ships as **immutable versions**. v1.0 is frozen for daily
+use. Future features (B25 alerting, B26 multi-tenant, custom batches…)
+are built in a **clone** of this folder on a different port, tested in
+isolation, then promoted via the launch checklist:
+
+```
+/home/azim/fazle-core            ← live (v1.0)
+/home/azim/fazle-core-v2-dev     ← work-in-progress copy on port 8201
+/home/azim/fazle-core-v1-archive ← previous version, kept 30 days
+```
+
+Full workflow + bump rules: [docs/ROADMAP.md](docs/ROADMAP.md#versioning-model).
+
+## Launching v1
+
+1. Open [docs/V1_LAUNCH_CHECKLIST.md](docs/V1_LAUNCH_CHECKLIST.md).
+2. Tick every box top-to-bottom (pre-flight → security → backup →
+   daily routine → dashboard → monetization).
+3. Flip `AUTO_REPLY_ENABLED=true` in `.env`, restart the service, tag
+   `git tag -a v1.0`.
+4. Watch `/observability/summary` and `journalctl -u fazle-core -f`
+   for the first 48 hours.

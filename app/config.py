@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     # Safe mode — no outgoing messages when False
     auto_reply_enabled: bool = False
 
+    # Batch 11 — per-intent auto-reply allow-list.
+    # When auto_reply_enabled=False, recruitment messages from non-admin
+    # senders (job-trigger keyword OR active intake session) still auto-reply.
+    # Everything else (escort, payment, attendance) stays draft-only.
+    recruitment_autoreply_enabled: bool = True
+
     # Company
     company_name: str = "Al-Aqsa Security Service"
     accountant_phone: str = ""

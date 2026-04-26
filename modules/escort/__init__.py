@@ -414,8 +414,8 @@ async def save_escort_programs(
                 INSERT INTO wbom_escort_programs (
                     mother_vessel, lighter_vessel, master_mobile,
                     destination, status, contact_id,
-                    program_date, remarks
-                ) VALUES ($1, $2, $3, $4, 'draft', $5, CURRENT_DATE, $6)
+                    program_date, shift, remarks
+                ) VALUES ($1, $2, $3, $4, 'draft', $5, CURRENT_DATE, 'D', $6)
                 RETURNING program_id
                 """,
                 mv,

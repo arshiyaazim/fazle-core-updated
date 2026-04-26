@@ -169,8 +169,10 @@ def _preprocess_image(file_path: str) -> Optional[str]:
         )
         if result.returncode == 0 and Path(tmp_path).stat().st_size > 0:
             return tmp_path
-    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
-        pass
+    except (FileNotFoundError, subprocess.TimeoutExpired) as _e:
+        log.debug(f"preprocess (tool missing/timeout): {_e}")
+    except Exception as _e:
+        log.warning(f"preprocess error: {_e}")
     Path(tmp_path).unlink(missing_ok=True)
     return None
 

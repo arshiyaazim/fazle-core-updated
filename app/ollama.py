@@ -95,7 +95,7 @@ async def classify_intent_llm(text: str) -> str:
                     }
                     return result if result in valid else "unknown"
         except Exception as e:
-            log.warning(f"Ollama classify error: {e}")
+            log.warning(f"Ollama classify error: {type(e).__name__}: {e}")
     return "unknown"
 
 
@@ -142,7 +142,7 @@ async def generate_reply(
                 if r.status_code == 200:
                     return r.json().get("response", "").strip()
         except Exception as e:
-            log.error(f"Ollama generate error: {e}")
+            log.error(f"Ollama generate error: {type(e).__name__}: {e}")
 
     return "আমি এই মুহূর্তে সাড়া দিতে পারছি না। অনুগ্রহ করে কিছুক্ষণ পরে আবার চেষ্টা করুন।"
 

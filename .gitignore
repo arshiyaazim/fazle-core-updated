@@ -62,3 +62,4 @@ yarn-error.log*
 *.tmp
 *.bak
 *.orig
+*.bak.*

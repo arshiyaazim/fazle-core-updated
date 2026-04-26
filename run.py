@@ -10,7 +10,7 @@ if __name__ == "__main__":
     s = get_settings()
     uvicorn.run(
         "app.main:app",
-        host="0.0.0.0",
+        host="127.0.0.1",
         port=s.app_port,
         reload=s.debug,
         log_level=s.log_level.lower(),

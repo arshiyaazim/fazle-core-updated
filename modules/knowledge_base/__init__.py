@@ -124,6 +124,15 @@ async def get_reply(text: str, intent: Optional[str] = None) -> Optional[str]:
     """
     text_lower = text.lower().strip()
 
+    # CV / recruitment content detection: long messages from job applicants contain
+    # "ঠিকানা", "address" as data fields, not as questions.  Skip short ambiguous
+    # keywords when the text is clearly a document (> 300 chars) or intent is recruitment.
+    is_cv_like = len(text) > 300 or intent == "recruitment"
+    _CV_SKIP_KEYWORDS = {"address", "ঠিকানা", "লোকেশন"}
+
+    def _should_skip(kw: str) -> bool:
+        return is_cv_like and kw.lower() in _CV_SKIP_KEYWORDS
+
     # 1. Try DB
     try:
         rows = await fetch_all(
@@ -132,6 +141,8 @@ async def get_reply(text: str, intent: Optional[str] = None) -> Optional[str]:
         for row in rows:
             keywords = row.get("trigger_keywords") or []
             for kw in keywords:
+                if _should_skip(kw):
+                    continue
                 if kw.lower() in text_lower:
                     log.info(f"[KB] DB match: key={row['key']} kw={kw!r}")
                     return row["reply_text"]
@@ -141,9 +152,22 @@ async def get_reply(text: str, intent: Optional[str] = None) -> Optional[str]:
     # 2. Fallback to hardcoded
     for keywords, reply in _FALLBACK:
         for kw in keywords:
+            if _should_skip(kw):
+                continue
             if kw.lower() in text_lower:
                 log.info(f"[KB] fallback match: kw={kw!r}")
                 return reply
+
+    # 3. Batch 21 — RAG semantic fallback (skip CV-like blobs)
+    if not is_cv_like:
+        try:
+            from modules import rag
+            res = await rag.answer(text, k=2, min_score=4.0)
+            if res and res.get("top_score", 0) >= 4.0:
+                log.info(f"[KB] RAG match score={res['top_score']}")
+                return res["answer"]
+        except Exception as e:
+            log.debug(f"[KB] RAG fallback failed: {e}")
 
     return None
 
@@ -160,8 +184,9 @@ async def get_recruitment_reply(text: str) -> Optional[str]:
             for kw in (row.get("trigger_keywords") or []):
                 if kw.lower() in text_lower:
                     return row["reply_text"]
-    except Exception:
-        pass
+    except Exception as _e:
+        from app.error_log import record_error
+        await record_error("knowledge_base.recruitment_lookup", _e)
     # Fallback subset
     for keywords, reply in _FALLBACK:
         for kw in keywords:

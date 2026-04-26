@@ -97,8 +97,9 @@ async def _create_session(phone: str, source: str, ctx: dict, first_step: str) -
                  AND status NOT IN ($2, 'rejected')""",
             phone, STEP_DONE,
         )
-    except Exception:
-        pass
+    except Exception as _e:
+        from app.error_log import record_error
+        await record_error("employee_verification.cleanup", _e)
 
     session_id = await fetch_val(
         """INSERT INTO fazle_draft_replies
@@ -330,9 +331,9 @@ async def _build_and_send_draft(
     await _persist_payment_number(employee_id, method, number)
 
     if request_type == "release_slip":
-        draft = await create_escort_payment_draft(employee_id)
+        draft = await create_escort_payment_draft(employee_id, source=source)
     else:
-        draft = await create_advance_request_draft(employee_id)
+        draft = await create_advance_request_draft(employee_id, source=source)
 
     if draft.get("error") or not draft.get("draft_id"):
         log.error(f"[verification] draft creation failed: {draft.get('error')}")
