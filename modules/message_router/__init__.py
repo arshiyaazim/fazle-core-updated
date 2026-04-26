@@ -124,6 +124,21 @@ async def process_message(
         if "attendance" in lower or "হাজিরা" in lower or "উপস্থিতি" in lower:
             return await get_attendance_summary(), None
 
+        # B25 (H4): Admin sent something unrecognised. Do NOT fall through to
+        # LLM — that produced garbage apologies that got queued as new drafts.
+        # Return inline help so admin sees the correct command syntax instead.
+        return (
+            "❌ কমান্ড বুঝিনি।\n\n"
+            "ব্যবহার:\n"
+            "  APPROVE <id>            — ড্রাফট পাঠান\n"
+            "  APPROVE <id> <id> ...   — একসাথে একাধিক\n"
+            "  REJECT <id>             — বাতিল\n"
+            "  EDIT <id> <নতুন বার্তা>\n"
+            "  PAID <id> <amount> <method>\n"
+            "  STATUS / DRAFTS         — পেন্ডিং তালিকা\n\n"
+            "বাংলা সংখ্যাও কাজ করে: APPROVE ১৬৫"
+        ), None
+
     # ── 4. ATTENDANCE (any role) — draft for admin approval ───────────────────
     # Checks supervisor AND any sender — admin approval required before DB save
     if is_supervisor_attendance(text) or (role_str != "admin" and is_attendance_message(text)):
