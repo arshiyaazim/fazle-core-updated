@@ -1,7 +1,12 @@
 # Fazle Core — WhatsApp AI Operations Engine
 
-**Version:** v1.0 (B11 → B24 complete) · **Status:** ready for launch
+**Version:** v1.0.1 (B11 → B24 + B25 hotfix) · **Status:** live
 · **Repo path:** `/home/azim/fazle-core` · **README path:** `/home/azim/fazle-core/README.md`
+
+> **v1.0.1 hotfix (Batch 25):** Draft Quality Gate, in-process admin command dedup,
+> multi-ID approve/reject (`APPROVE 165 162` or `APPROVE ১৬৫`), softer LLM fallback,
+> admin help on unknown command. Env kill-switch: `DRAFT_QUALITY_GATE=false`.
+> See [docs/ROADMAP.md](docs/ROADMAP.md) for full changelog.
 
 A production FastAPI backend running on VPS that bridges WhatsApp conversations into structured business workflows for HR, Payroll, and Escort Operations.
 
