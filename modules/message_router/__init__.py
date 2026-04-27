@@ -40,6 +40,7 @@ from modules.recruitment_flow import (
     is_recruitment_trigger,
 )
 from modules.admin_commands import is_admin_command, process_admin_command, list_payment_drafts
+from modules.admin_commands.nl_router import is_nl_admin_query, process_nl_admin_query
 from modules.payment_workflow import is_advance_request
 from modules.attendance import handle_attendance_message, is_attendance_message, get_attendance_summary
 from modules.attendance_parser import (
@@ -116,6 +117,13 @@ async def process_message(
                 return confirm_text, None
             return result, None  # type: ignore[return-value]
 
+        # Phase 1.1 (v1.1.0): Natural-language admin queries (no LLM).
+        # Runs AFTER structured commands so APPROVE/REJECT/etc still win.
+        if is_nl_admin_query(text):
+            reply = await process_nl_admin_query(text, sender)
+            if reply:
+                return reply, None
+
         lower = text.lower()
         if "draft" in lower or "পেন্ডিং" in lower or "list" in lower:
             return await _cmd_admin_list(), None
@@ -136,6 +144,10 @@ async def process_message(
             "  EDIT <id> <নতুন বার্তা>\n"
             "  PAID <id> <amount> <method>\n"
             "  STATUS / DRAFTS         — পেন্ডিং তালিকা\n\n"
+            "🔎 প্রশ্ন (Natural Language):\n"
+            "  show last 10 chats of 01XXXXXXXXX\n"
+            "  last contact of 01XXXXXXXXX\n"
+            "  01XXXXXXXXX এর শেষ ১০ চ্যাট\n\n"
             "বাংলা সংখ্যাও কাজ করে: APPROVE ১৬৫"
         ), None
 
