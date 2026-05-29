@@ -18,6 +18,8 @@ log = logging.getLogger("fazle.voice")
 
 # Minimum confidence (word count) to trust transcript
 MIN_WORD_COUNT = 2
+# Retry: on timeout, attempt once more with a shorter segment window
+_TIMEOUT_RETRY_S = 45.0
 
 
 class VoiceResult(TypedDict):
@@ -32,18 +34,27 @@ class VoiceResult(TypedDict):
 async def process_voice(file_path: str) -> VoiceResult:
     """
     Full pipeline: transcribe → language detect → intent → reply.
+    On timeout: retries once before raising.
     """
     settings = get_settings()
 
     transcript = await _call_transcribe(settings.media_processor_url, file_path)
     words = transcript.split() if transcript else []
-    confident = len(words) >= MIN_WORD_COUNT
+    word_count = len(words)
+    confident = word_count >= MIN_WORD_COUNT
     lang = _detect_language(transcript)
+
+    # Log confidence detail for monitoring
+    file_size = _safe_file_size(file_path)
+    log.info(
+        "[voice] conf=%s words=%d lang=%s file=%s size_kb=%d",
+        confident, word_count, lang, os.path.basename(file_path), file_size // 1024,
+    )
 
     if not confident:
         return VoiceResult(
             transcript=transcript,
-            word_count=len(words),
+            word_count=word_count,
             confident=False,
             language_hint=lang,
             intent="unknown",
@@ -62,7 +73,7 @@ async def process_voice(file_path: str) -> VoiceResult:
 
     return VoiceResult(
         transcript=transcript,
-        word_count=len(words),
+        word_count=word_count,
         confident=True,
         language_hint=lang,
         intent=intent,
@@ -70,26 +81,62 @@ async def process_voice(file_path: str) -> VoiceResult:
     )
 
 
-async def _call_transcribe(base_url: str, file_path: str) -> str:
+def _safe_file_size(file_path: str) -> int:
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.post(
-                f"{base_url.rstrip('/')}/transcribe",
-                json={"file_path": file_path},
-            )
-            if r.status_code == 200:
-                return r.json().get("text", "").strip()
-            log.warning(f"[voice] transcribe returned {r.status_code}")
-    except Exception as e:
-        log.error(f"[voice] transcribe error: {e}")
-    return ""
+        return os.path.getsize(file_path)
+    except Exception:
+        return 0
+
+
+async def _call_transcribe(base_url: str, file_path: str) -> str:
+    """
+    Call media-processor /transcribe. On TimeoutException, retries once
+    with a shorter timeout before re-raising to the caller.
+    Other errors are raised immediately so bridge_poller can save a draft.
+    """
+    basename = os.path.basename(file_path)
+    try:
+        return await _transcribe_attempt(base_url, file_path, timeout=60.0)
+    except httpx.TimeoutException:
+        log.warning(f"[voice] transcribe timeout (attempt 1) — retrying file={basename}")
+        try:
+            return await _transcribe_attempt(base_url, file_path, timeout=_TIMEOUT_RETRY_S)
+        except httpx.TimeoutException:
+            log.error(f"[voice] transcribe timeout (attempt 2, final) file={basename}")
+            raise
+        except Exception as e:
+            log.error(f"[voice] transcribe retry error={type(e).__name__}: {e} file={basename}")
+            raise
+
+
+async def _transcribe_attempt(base_url: str, file_path: str, timeout: float) -> str:
+    basename = os.path.basename(file_path)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.post(
+            f"{base_url.rstrip('/')}/transcribe",
+            json={"file_path": file_path},
+        )
+        if r.status_code == 200:
+            text = r.json().get("text", "").strip()
+            words = len(text.split()) if text else 0
+            log.info(f"[voice] transcribe ok file={basename} words={words}")
+            # Log low-confidence transcript for monitoring
+            if 0 < words < MIN_WORD_COUNT:
+                log.warning(
+                    f"[voice] LOW_CONFIDENCE file={basename} words={words} "
+                    f"transcript={text!r}"
+                )
+            return text
+        log.warning(f"[voice] transcribe returned {r.status_code} file={basename}")
+        # Non-200 is not a timeout — return empty (caller decides draft vs. skip)
+        return ""
 
 
 def _detect_language(text: str) -> str:
     """Heuristic: count Bengali unicode characters."""
     if not text:
         return "unknown"
-    bn_chars = sum(1 for c in text if "\u0980" <= c <= "\u09FF")
+    bn_chars = sum(1 for c in text if "ঀ" <= c <= "৿")
     latin_chars = sum(1 for c in text if c.isalpha() and ord(c) < 128)
     total = bn_chars + latin_chars
     if total == 0:

@@ -22,6 +22,7 @@ INTAKE_KEYWORDS: set[str] = {
     "job", "কাজ", "চাকরি", "vacancy", "apply", "hire",
     "recruit", "নিয়োগ", "কাজের", "চাই", "interested",
     "আগ্রহী", "পদ", "পারব", "নেবেন", "জয়েন",
+    "cv", "joining",  # P17-FIX-3: added for "cv dibo" / "joining kobe" test cases
 }
 
 VALID_POSITIONS: dict[str, str] = {

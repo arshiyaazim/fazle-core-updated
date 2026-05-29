@@ -278,3 +278,361 @@ async def handle_release_event(
         "employee_name": draft.get("employee_name"),
         "error": draft.get("error"),
     }
+
+
+# ── Phase 22: Release slip draft flow ────────────────────────────────────────
+# After OCR detects a release slip, build an admin-review draft.
+# Admin corrects and sends outbound → parse_release_confirmation() → close_program().
+
+_RC_DATE_RE = re.compile(
+    r"(?:end\s*date|release\s*date|completion\s*date|তারিখ)[:\s]+(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}-\d{2}-\d{2})",
+    re.IGNORECASE,
+)
+_RC_SHIFT_RE = re.compile(r"\bShift[:\s]+([DN])\b", re.IGNORECASE)
+_RC_POINT_RE = re.compile(
+    r"(?:Release\s*Point|release\s*location|Location)[:\s]+([^\n]{3,50})", re.IGNORECASE
+)
+_RC_DAYS_RE = re.compile(r"\bDays?[:\s]+(\d+(?:\.\d+)?)\b", re.IGNORECASE)
+_RC_CONV_RE = re.compile(r"\bConveyance[:\s]+([\d,]+)\b", re.IGNORECASE)
+_RC_ESCORT_RE = re.compile(r"\bEscort[:\s]+([^\n]{3,30})", re.IGNORECASE)
+_RC_LIGHTER_RE = re.compile(r"\bLighter[:\s]+([^\n]{3,30})", re.IGNORECASE)
+_RC_ANCHOR = re.compile(r"\[RELEASE CONFIRMED\]", re.IGNORECASE)
+
+
+# ── Transport estimate table ──────────────────────────────────────────────────
+# Management-approved rates aligned with escort_calculation_config DB and
+# resources/ops/transport_allowances.txt (authoritative source). Updated 2026-05-29.
+_TRANSPORT_RATES: list[tuple[list[str], int]] = [
+    # ₺600 group — Dhaka / Narayanganj area
+    (["dhaka", "narayanganj", "bhairab", "ashuganj", "kaliganj",
+       "rupganj", "rupshi", "siddhirganj", "shah cement", "mir cement",
+       "shah_cement", "mir_cement"], 600),
+    # ₺700 group — Faridpur / Mongla
+    (["faridpur", "mongla"], 700),
+    # ₺900 group — Barishal / coastal / river routes
+    (["barishal", "barisal", "bhola", "jhalokathi", "jhalokati",
+       "nagarbari", "aricha"], 900),
+    # ₺1000 group — Noapara / Jessore / Khulna
+    (["noapara", "jessore", "jashore", "khulna"], 1000),
+]
+_DEFAULT_TRANSPORT = 600  # minimum if location not matched
+
+
+def _estimate_transport(location: str) -> int:
+    if not location:
+        return _DEFAULT_TRANSPORT
+    loc = location.lower()
+    for keywords, rate in _TRANSPORT_RATES:
+        if any(k in loc for k in keywords):
+            return rate
+    return _DEFAULT_TRANSPORT
+
+
+def _calc_duty_days(raw_text: str, rel_date_str: str) -> tuple[Optional[int], str, str]:
+    """Return (duty_days, start_date_str, end_date_str) from raw OCR text.
+    Finds all date-like tokens and treats first as start, last as end."""
+    all_dates = re.findall(
+        r"\b(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}-\d{2}-\d{2})\b",
+        raw_text or "",
+    )
+    start_str = all_dates[0] if len(all_dates) >= 2 else ""
+    end_str = all_dates[-1] if all_dates else rel_date_str
+
+    def _parse(s: str) -> Optional[date]:
+        for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d",
+                    "%d.%m.%y", "%d/%m/%y", "%d-%m-%y"):
+            try:
+                return datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    start_d = _parse(start_str) if start_str else None
+    end_d = _parse(end_str) if end_str else None
+    if start_d and end_d and end_d >= start_d:
+        days = (end_d - start_d).days + 1
+        return days, start_str, end_str
+    return None, start_str, end_str
+
+
+def _validate_release_date(rel_date: str) -> tuple[bool, str]:
+    """Return (is_valid, reason). Rejects future dates and obviously wrong values."""
+    if not rel_date:
+        return True, ""  # missing date is warned elsewhere
+    def _try_parse(s: str) -> Optional[date]:
+        for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d",
+                    "%d.%m.%y", "%d/%m/%y", "%d-%m-%y"):
+            try:
+                return datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+        return None
+    d = _try_parse(rel_date)
+    if d is None:
+        return True, ""  # unparseable — warn but don't block
+    today = date.today()
+    if d > today:
+        return False, f"future date: {rel_date}"
+    if (today - d).days > 365:
+        return False, f"date too old (>1yr): {rel_date}"
+    return True, ""
+
+
+async def _fuzzy_employee_lookup(name: str) -> Optional[str]:
+    """DB READ ONLY: find closest employee name match. Returns 'name (id=X)' or None."""
+    if not name or len(name) < 3:
+        return None
+    try:
+        # Use ILIKE for substring match — no fuzzy extension needed
+        rows = await fetch_all(
+            """SELECT e.employee_id, e.full_name
+               FROM wbom_employees e
+               WHERE e.full_name ILIKE $1
+               LIMIT 3""",
+            f"%{name}%",
+        )
+        if rows:
+            return "; ".join(f"{r['full_name']} (id={r['employee_id']})" for r in rows)
+    except Exception as _e:
+        log.debug(f"[release-ocr] fuzzy lookup failed: {_e}")
+    return None
+
+
+def build_release_draft(ocr_result: dict) -> str:
+    """
+    Build an admin review draft from OCR-extracted release slip fields.
+    Includes duty-day count and safe food + transport estimates (DRAFT ONLY).
+    Admin receives this, corrects any mistakes, then sends as outbound to confirm.
+    Format is designed to be parseable by parse_release_confirmation().
+    """
+    escort = ocr_result.get("employee_name") or ""
+    lighter = ocr_result.get("vessel") or ""
+    rel_date = ocr_result.get("date") or ""
+    location = ocr_result.get("location") or ""
+    amount = ocr_result.get("amount") or ""
+    raw_text = ocr_result.get("raw_text") or ocr_result.get("raw_ocr_text") or ""
+
+    # Validate required fields
+    missing: list[str] = []
+    if not escort:
+        missing.append("Escort Name")
+    if not lighter:
+        missing.append("Lighter Vessel")
+    if not rel_date:
+        missing.append("Release Date")
+    if not location:
+        missing.append("Release Location")
+
+    # Release date sanity check (Part F)
+    warnings: list[str] = []
+    date_valid, date_reason = _validate_release_date(rel_date)
+    if not date_valid:
+        warnings.append(f"⚠️ DATE WARNING: {date_reason}")
+
+    # Calculate duty days from raw text dates
+    duty_days, start_date_str, end_date_str = _calc_duty_days(raw_text, rel_date)
+
+    # Reject negative or zero duty days (Part F)
+    if duty_days is not None and duty_days <= 0:
+        warnings.append(f"⚠️ INVALID DUTY DAYS: {duty_days} (calculated from dates)")
+        duty_days = None
+
+    # Reject implausibly large duty days (>90 days is suspicious)
+    if duty_days is not None and duty_days > 90:
+        warnings.append(f"⚠️ SUSPICIOUS DUTY DAYS: {duty_days} — verify dates")
+
+    # OCR confidence check
+    conf = ocr_result.get("confidence_score", 100)
+    if conf < 40:
+        warnings.append(f"⚠️ LOW OCR CONFIDENCE: {conf}/100 — verify all fields")
+
+    # TASK 4: DRAFT ONLY — transport uses hardcoded _TRANSPORT_RATES, not DB.
+    # escort_calculation_config table values differ (e.g. Mongla ৳1500 vs code ৳1000).
+    # Do NOT auto-send release slip replies until DB sync is implemented.
+    transport_est = _estimate_transport(location) if location else None
+    food_est = (duty_days * 150) if duty_days else None
+
+    status_tag = "⚠️ INCOMPLETE" if missing else ("⚠️ WARNINGS" if warnings else "✅ OCR DRAFT")
+
+    lines = [
+        f"[RELEASE CONFIRMED]  {status_tag}",
+        f"Escort: {escort}",
+        f"Lighter: {lighter}",
+        f"Release Point: {location}",
+        f"Start Date: {start_date_str or '?'}",
+        f"End Date: {end_date_str or rel_date or '?'}",
+        "Shift: D",
+        f"Days: {duty_days if duty_days is not None else '?'}",
+        f"Conveyance: {amount or (str(transport_est) if transport_est else '?')}",
+    ]
+
+    if missing:
+        lines.append(f"Missing fields: {', '.join(missing)}")
+    for w in warnings:
+        lines.append(w)
+
+    lines.append("---")
+    lines.append("ESTIMATE (DRAFT ONLY — DO NOT SEND AS FINAL):")
+    if food_est is not None:
+        lines.append(f"  Food: {duty_days} days × ৳150 = ৳{food_est}")
+    else:
+        lines.append("  Food: ? days × ৳150 = ৳?")
+    if transport_est is not None:
+        lines.append(f"  Transport: ৳{transport_est} ({location})")
+    else:
+        lines.append("  Transport: ৳? (location unknown)")
+    total = (food_est or 0) + (transport_est or 0)
+    if food_est and transport_est:
+        lines.append(f"  Total estimate: ৳{total}")
+    lines.append("---")
+    lines.append("OCR draft — admin must review, correct, then send to confirm.")
+    # TASK 4: This output is intentionally DRAFT ONLY. Transport estimates are not
+    # DB-synced; auto-send is disabled until escort_calculation_config is wired in.
+
+    return "\n".join(lines)
+
+
+def is_release_confirmation(text: str) -> bool:
+    """Return True if admin message is a release confirmation (not an assignment completion)."""
+    return bool(_RC_ANCHOR.search(text))
+
+
+def parse_release_confirmation(text: str) -> dict:
+    """Extract release fields from admin's confirmed release message."""
+    fields: dict = {}
+
+    m = _RC_DATE_RE.search(text)
+    if m:
+        fields["end_date"] = m.group(1).strip()
+
+    m = _RC_SHIFT_RE.search(text)
+    if m:
+        fields["end_shift"] = m.group(1).upper()
+
+    m = _RC_POINT_RE.search(text)
+    if m:
+        fields["release_point"] = m.group(1).strip()
+
+    m = _RC_DAYS_RE.search(text)
+    if m:
+        fields["day_count"] = m.group(1).strip()
+
+    m = _RC_CONV_RE.search(text)
+    if m:
+        fields["conveyance"] = m.group(1).replace(",", "").strip()
+
+    m = _RC_ESCORT_RE.search(text)
+    if m:
+        fields["escort_name"] = m.group(1).strip()
+
+    m = _RC_LIGHTER_RE.search(text)
+    if m:
+        fields["lighter_vessel"] = m.group(1).strip()
+
+    return fields
+
+
+async def handle_admin_release_confirmation(
+    text: str,
+    chat_jid: str,
+    source: str = "release-admin-confirm",
+) -> dict:
+    """
+    Called when bridge_poller detects an admin outbound release confirmation
+    (is_from_me=1, text contains [RELEASE CONFIRMED]).
+
+    Looks up the active program for the employee in chat_jid, then closes it.
+    Returns handle_release_event() result.
+    """
+    fields = parse_release_confirmation(text)
+    if not fields:
+        log.warning(f"[release-confirm] No fields parsed from text, skipping")
+        return {"ok": False, "status": "no_fields"}
+
+    # Try to find employee by the chat_jid phone number
+    phone = chat_jid.replace("@s.whatsapp.net", "").strip()
+    emp = await fetch_one(
+        """SELECT e.employee_id
+           FROM wbom_employees e
+           JOIN wbom_contacts c ON c.contact_id = e.contact_id
+           WHERE c.whatsapp_number = $1 LIMIT 1""",
+        phone,
+    )
+    if not emp:
+        # Try via escort_mobile on active program
+        emp_row = await fetch_one(
+            """SELECT escort_employee_id AS employee_id
+               FROM wbom_escort_programs
+               WHERE escort_mobile = $1 AND status NOT IN ('Completed', 'Cancelled')
+               ORDER BY program_date DESC LIMIT 1""",
+            phone,
+        )
+        if emp_row:
+            emp = emp_row
+
+    if not emp:
+        log.warning(f"[release-confirm] No employee found for phone={phone}")
+        return {"ok": False, "status": "employee_not_found", "phone": phone}
+
+    employee_id = int(emp["employee_id"])
+    log.info(f"[release-confirm] employee_id={employee_id} fields={fields}")
+
+    return await handle_release_event(
+        employee_id=employee_id,
+        extracted=fields,
+        source=source,
+    )
+
+
+async def handle_ocr_release_slip(
+    ocr_result: dict,
+    source: str = "bridge_poller",
+    phone: str = "unknown",
+) -> Optional[str]:
+    """
+    Called when OCR identifies a release_slip.
+    Builds an admin review draft, saves it to fazle_draft_replies (DRAFT ONLY),
+    and returns it as a string for the caller to forward to the admin bridge.
+    Does NOT close the program and does NOT send automatically.
+    Returns None if not a release slip.
+    """
+    import json
+    if ocr_result.get("slip_type") != "release_slip":
+        return None
+
+    draft = build_release_draft(ocr_result)
+    escort = ocr_result.get("employee_name") or phone
+    missing = [f for f in ("employee_name", "vessel", "date", "location")
+               if not ocr_result.get(f)]
+
+    # DB READ ONLY: fuzzy match employee name for admin hint
+    db_match = await _fuzzy_employee_lookup(escort)
+    if db_match:
+        log.info(f"[release-ocr] fuzzy name match: {db_match}")
+        draft += f"\nDB match (verify): {db_match}"
+
+    # Save to draft_replies for admin queue (READ-ONLY DB lookup, NO financial write)
+    try:
+        await execute(
+            """INSERT INTO fazle_draft_replies
+               (source, recipient, reply_text, intent, draft_only, status,
+                draft_type, meta)
+               VALUES ($1, $2, $3, 'release_slip_ocr', true, 'pending',
+                       'release_slip', $4::jsonb)""",
+            source,
+            phone,
+            draft,
+            json.dumps({
+                "ocr_employee": escort,
+                "missing_fields": missing,
+                "incomplete": bool(missing),
+                "db_match": db_match,
+                "confidence_score": ocr_result.get("confidence_score", 0),
+            }),
+        )
+        log.info(f"[release-ocr] draft saved to DB for employee={escort} missing={missing}")
+    except Exception as _db_err:
+        log.error(f"[release-ocr] failed to save draft to DB: {_db_err}")
+
+    log.info(f"[release-ocr] admin draft built for employee={escort}")
+    return draft

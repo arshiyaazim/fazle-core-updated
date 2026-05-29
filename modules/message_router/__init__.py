@@ -23,7 +23,7 @@ import logging
 from typing import Optional
 
 from app.config import get_settings
-from app.database import fetch_one, fetch_all
+from app.database import fetch_one, fetch_all, execute
 from app import ollama as ai
 from modules.intent import classify
 from modules.identity_brain import detect_identity
@@ -60,6 +60,79 @@ log = logging.getLogger("fazle.router")
 # Roles that trigger the escort client flow
 _ESCORT_ROLES = frozenset({"escort_client", "client_escort_buyer", "vip_client", "repeat_client"})
 
+# TASK 1: Name tokens that trigger silent-skip (no reply, no draft, no queue)
+_SILENT_SKIP_NAME_TOKENS: tuple[str, ...] = ("al-aqsa", "escort", "client")
+
+# Phase 4.5 / 6E: Intents cleared for auto-send (recruitment + employee info + office location).
+# Financial complaints are protected by the complaint-phrase guard in bridge_poller.
+# Roles in DRAFT_ALWAYS_ROLES (accountant, client_escort_buyer, vip_client, repeat_client)
+# remain drafted regardless of intent — EXCEPT office_location which is safe for all roles.
+_SAFE_AUTOSEND_INTENTS: frozenset[str] = frozenset({
+    # ── Recruitment information ───────────────────────────────────────────────
+    "recruitment",      # job queries, vacancy, requirements, joining process
+    "join",             # joining date, first-duty scheduling
+    "greeting",         # menu / welcome / first contact
+    "office_location",  # office address queries — KB-only fast path, safe for all roles
+    # ── Employee information (non-financial) ──────────────────────────────────
+    "salary_query",     # salary schedule, payroll cycle info (complaint guard active)
+    "payment_due",      # payment date queries (complaint guard active)
+    # advance_request intentionally excluded: actual advance requests ("অ্যাডভান্স চাই")
+    # must stay DRAFT — only informational advance policy answers are safe to auto-send
+    # and those reach KB before classification matters.
+    "attendance",       # attendance rules, absence policy
+    "leave",            # leave policy, resignation rules
+    "escort_duty",      # duty schedule, transport/food policy info
+})
+
+
+def _phone_variants(phone: str) -> list[str]:
+    """Return all normalized forms of a phone number for DB lookup."""
+    variants = [phone]
+    if phone.startswith("880") and len(phone) >= 13:
+        variants.append("0" + phone[3:])
+    elif phone.startswith("01") and len(phone) == 11:
+        variants.append("880" + phone[1:])
+    return variants
+
+
+async def _should_silent_skip(sender: str) -> tuple[bool, str]:
+    """Return (should_skip, reason) for contacts that must receive no reply, no draft.
+
+    Rules:
+      1. sender == ACCOUNTANT_PHONE → skip
+      2. wbom_contacts.display_name contains 'al-aqsa', 'escort', or 'client' → skip
+    """
+    settings = get_settings()
+    if settings.accountant_phone and sender == settings.accountant_phone:
+        return True, f"accountant phone match ({sender})"
+    try:
+        contact = None
+        for v in _phone_variants(sender):
+            contact = await fetch_one(
+                "SELECT display_name FROM wbom_contacts"
+                " WHERE whatsapp_number = $1 AND is_active = true LIMIT 1",
+                v,
+            )
+            if contact:
+                break
+        if contact:
+            name_lower = (contact.get("display_name") or "").lower()
+            for token in _SILENT_SKIP_NAME_TOKENS:
+                if token in name_lower:
+                    return True, f"display_name contains '{token}' ({contact['display_name']!r})"
+    except Exception as _e:
+        log.debug("[SILENT_SKIP] contact lookup error for %s: %s", sender, _e)
+    return False, ""
+
+
+def _is_safe_autosend_intent(intent: str, role: str) -> bool:  # noqa: ARG001
+    """Return True if this intent is safe for auto-send without manual review.
+
+    Safe: salary_query, payment_due, advance_request, recruitment.
+    Unsafe: employee_salary_complaint, legal_issue, payment_issue, release-slip estimates.
+    """
+    return intent in _SAFE_AUTOSEND_INTENTS
+
 
 async def process_message(
     sender: str, text: str, source: str
@@ -69,6 +142,12 @@ async def process_message(
     Does NOT send anything — callers handle delivery.
     """
     settings = get_settings()
+
+    # TASK 2: Silent-skip excluded contacts before any processing or draft creation
+    _skip, _skip_reason = await _should_silent_skip(sender)
+    if _skip:
+        log.info("[SILENT_SKIP] %s → no reply, no draft (%s)", sender, _skip_reason)
+        return "", None
 
     identity = await detect_identity(sender, text)
     role_str = identity["role"]
@@ -172,6 +251,26 @@ async def process_message(
 
     # ── 6. ACCOUNTANT ─────────────────────────────────────────────────────────
     if role_str == "accountant":
+        from modules.accountant_summary import is_accountant_summary, ack_accountant_summary
+        if is_accountant_summary(text):
+            return ack_accountant_summary(text), None
+
+        from modules.admin_commands.nl_advance_record import (
+            is_advance_record_query, intent_advance_record,
+        )
+        if is_advance_record_query(text):
+            return await intent_advance_record(text, admin_phone=sender), None
+
+        from modules.payment_ingest import looks_like_payment_sms, ingest_payment_sms
+        if looks_like_payment_sms(text):
+            result = await ingest_payment_sms(text, sender_number=sender)
+            return _fmt_ingest_reply(result), None
+
+        from modules.payment_ingest import is_admin_cash_shorthand, ingest_admin_cash_entry
+        if is_admin_cash_shorthand(text):
+            result = await ingest_admin_cash_entry(text, sender_number=sender)
+            return _fmt_ingest_reply(result), None
+
         kb_reply = await kb_get_reply(text, intent)
         if kb_reply:
             return kb_reply, None
@@ -252,6 +351,16 @@ async def process_message(
                     return ("⚠️ আপনার নামে কোনো চলমান escort program পাওয়া যায়নি। "
                             "Admin-কে যোগাযোগ করুন।"), None
 
+        if intent in ("employee_salary_complaint", "legal_issue", "payment_issue"):
+            await execute(
+                "INSERT INTO fazle_draft_replies"
+                " (source, recipient, reply_text, intent, draft_only, draft_type)"
+                " VALUES ($1, $2, $3, $4, true, 'complaint')",
+                source, sender, f"[{intent}] {text}", intent,
+            )
+            log.warning("[COMPLAINT_DRAFT] intent=%s sender=%s emp_id=%s", intent, sender, emp_id)
+            return "আপনার বার্তা পেয়েছি। দায়িত্বশীল ব্যক্তি শীঘ্রই যোগাযোগ করবেন।", None
+
         if is_advance_request(text):
             return await start_advance_verification(sender, source, emp_id)
 
@@ -267,18 +376,78 @@ async def process_message(
     if not existing_session and is_advance_request(text) and role_str != "admin":
         return await start_advance_verification(sender, source, identity.get("employee_id"))
 
-    # ── 12. KNOWLEDGE BASE (all roles, all intents) ───────────────────────────
+    # ── 12. OFFICE LOCATION FAST PATH (KB-only, no AI, no reviewed memory) ──────
+    # office_location intent skips reviewed-memory lookup and AI entirely.
+    # The answer is always b11_office_address — deterministic and safe for all roles.
+    if intent == "office_location":
+        office_reply = await kb_get_reply(text, intent)
+        if office_reply:
+            log.info("[OFFICE_FAST] %s → office_location → KB direct return", sender)
+            return office_reply, None
+        # Hardcoded fallback if KB unavailable
+        return (
+            "📍 আমাদের অফিস:\n"
+            "আল-আকসা সিকিউরিটি অ্যান্ড লজিস্টিকস সার্ভিসেস লিমিটেড\n"
+            "আগ্রপাড়া, ভিক্টোরিয়া গেইট নং ১, খোকনের বিল্ডিং (২য় তলা)\n"
+            "পাহাড়তলী, চট্টগ্রাম সিটি কর্পোরেশন\n\n"
+            "🕘 সকাল ৯টা – বিকাল ৫টা (শুক্রবার বন্ধ)\n"
+            "📲 WhatsApp: 01958 122322"
+        ), None
+
+    # ── 13. KNOWLEDGE BASE (all roles, all other intents) ─────────────────────
     kb_reply = await kb_get_reply(text, intent)
     if kb_reply:
         return kb_reply, None
 
-    # ── 13. AI FALLBACK ────────────────────────────────────────────────────────
+    # ── 14. REVIEWED REPLY LOOKUP ─────────────────────────────────────────────
+    # Check admin-approved edited replies before falling back to LLM.
+    # Fails safe: any exception is caught and routing continues to AI fallback.
+    try:
+        from modules import reviewed_reply_memory as _rrm
+        _reviewed = await _rrm.lookup_reviewed_reply(
+            sender_phone=sender,
+            intent=intent,
+            role=role_str,
+        )
+        if _reviewed:
+            log.info(
+                "[reviewed] hit sender=%s intent=%s scope=%s id=%s",
+                sender, intent, _reviewed.get("match_scope"), _reviewed.get("id"),
+            )
+            return _reviewed["reply_text"], None
+    except Exception as _rrm_err:
+        log.debug("[reviewed] lookup non-fatal error: %s", _rrm_err)
+
+    # ── 15. AI FALLBACK ────────────────────────────────────────────────────────
     db_ctx = await get_contact_context(sender)
     reply = await ai.generate_reply(text, intent, db_ctx, role=role_str)
     return reply, None
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _fmt_ingest_reply(result: dict) -> str:
+    """Format a human-readable WhatsApp reply from a payment ingest result dict."""
+    if not result.get("ok"):
+        reason = result.get("reason", "অজানা সমস্যা")
+        return f"❌ রেকর্ড করা যায়নি: {reason}"
+    status = result.get("status", "")
+    emp = result.get("employee_name") or result.get("matched_employee_id") or "?"
+    amt = result.get("amount", 0)
+    method = result.get("method", "")
+    if status == "duplicate":
+        return f"⚠️ ইতিমধ্যে রেকর্ড আছে (staging #{result.get('staging_id')})।"
+    if status == "unmatched":
+        mob = result.get("mobile", "?")
+        return (
+            f"⚠️ কর্মী খুঁজে পাওয়া যায়নি ({mob})।\n"
+            f"পেমেন্ট pending হিসেবে সেভ হয়েছে (#{result.get('staging_id')})।\n"
+            f"Admin অনুমোদন প্রয়োজন।"
+        )
+    if status == "auto_approved":
+        return f"✅ রেকর্ড হয়েছে — {emp}, ৳{amt:.0f} ({method}) — auto-approved।"
+    return f"✅ রেকর্ড হয়েছে — {emp}, ৳{amt:.0f} ({method}) — pending admin approval।"
+
 
 def get_primary_admin() -> str:
     settings = get_settings()
@@ -310,14 +479,25 @@ def _resolve_forward_target(command_text: str, settings) -> Optional[str]:
     return None
 
 
+async def get_recent_history(phone: str, limit: int = 5) -> list:
+    """Return recent inbound message texts for a given phone number."""
+    try:
+        rows = await fetch_all(
+            """SELECT message_text FROM wbom_inbound_messages
+               WHERE sender_number = $1
+               ORDER BY received_at DESC LIMIT $2""",
+            phone, limit,
+        )
+        return [r["message_text"] for r in rows if r.get("message_text")]
+    except Exception as e:
+        log.debug(f"get_recent_history error: {e}")
+        return []
+
+
 async def get_contact_context(phone: str) -> str:
     lines: list[str] = []
     try:
-        phone_variants = [phone]
-        if phone.startswith("880") and len(phone) >= 13:
-            phone_variants.append("0" + phone[3:])
-        elif phone.startswith("01") and len(phone) == 11:
-            phone_variants.append("880" + phone[1:])
+        phone_variants = _phone_variants(phone)
 
         contact = None
         for v in phone_variants:

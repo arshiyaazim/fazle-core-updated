@@ -1,0 +1,3085 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FPE Payroll Dashboard — Fazle</title>
+<style>
+:root{
+  --bg:#f0f4f8;--card:#fff;--accent:#1a472a;--accent2:#2d6a4f;--accent3:#40916c;
+  --err:#dc2626;--warn:#d97706;--ok:#16a34a;--muted:#64748b;--border:#e2e8f0;
+  --surface:#f8fafc;--text:#1e293b;--text2:#475569;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+  background:var(--bg);color:var(--text);font-size:14px;line-height:1.5}
+
+/* ─── Login Overlay ─────────────────────────────────────────────────────── */
+#loginOverlay{position:fixed;inset:0;background:rgba(15,23,42,.7);display:flex;
+  align-items:center;justify-content:center;z-index:9999;backdrop-filter:blur(4px)}
+#loginBox{background:#fff;padding:32px;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.25);
+  min-width:360px;max-width:90vw}
+#loginBox h2{color:var(--accent);margin-bottom:6px;font-size:20px}
+#loginBox p{color:var(--muted);margin-bottom:20px;font-size:13px}
+#loginBox input{width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;
+  font-size:14px;margin-bottom:12px;outline:none;transition:border-color .2s}
+#loginBox input:focus{border-color:var(--accent)}
+#loginBox .btn{width:100%;padding:11px;font-size:15px}
+#loginErr{min-height:18px;color:var(--err);font-size:13px;margin-top:6px}
+
+/* ─── Layout ─────────────────────────────────────────────────────────────── */
+#app{display:none;min-height:100vh;flex-direction:column}
+
+header{background:var(--accent);color:#fff;padding:0 24px;height:56px;
+  display:flex;align-items:center;gap:12px;box-shadow:0 2px 6px rgba(0,0,0,.2);flex-shrink:0}
+header h1{font-size:17px;font-weight:700;letter-spacing:.2px}
+header .spacer{flex:1}
+.badge{background:rgba(255,255,255,.15);padding:3px 10px;border-radius:20px;font-size:12px;font-weight:500}
+.badge.ok{background:rgba(22,163,74,.3)}
+.badge.warn{background:rgba(217,119,6,.35)}
+.badge.err{background:rgba(220,38,38,.3)}
+
+nav{background:#fff;border-bottom:1px solid var(--border);display:flex;gap:0;
+  overflow-x:auto;flex-shrink:0;position:sticky;top:0;z-index:100}
+nav button{background:none;border:none;padding:14px 20px;cursor:pointer;font-size:13px;
+  font-weight:500;color:var(--muted);border-bottom:3px solid transparent;white-space:nowrap;
+  transition:color .15s,border-color .15s}
+nav button:hover{color:var(--accent2)}
+nav button.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+
+main{padding:20px 24px;max-width:1440px;margin:0 auto;width:100%;flex:1}
+
+/* ─── Cards ──────────────────────────────────────────────────────────────── */
+.card{background:var(--card);border-radius:10px;padding:18px 20px;
+  box-shadow:0 1px 4px rgba(0,0,0,.07);margin-bottom:16px;border:1px solid var(--border)}
+.card h2{font-size:14px;font-weight:700;color:var(--accent2);margin-bottom:14px;
+  padding-bottom:10px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:8px}
+
+/* ─── Stat Grid ──────────────────────────────────────────────────────────── */
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
+.stat-grid.compact{grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:8px}
+.stat-grid.compact .stat{padding:8px 10px}
+.stat-grid.compact .stat .num{font-size:18px}
+.stat-grid.compact .stat .lbl{font-size:10px;margin-top:3px}
+@media (min-width:900px){.stat-grid.compact{grid-template-columns:repeat(4,1fr)}}
+@media (max-width:600px){.stat-grid.compact{grid-template-columns:repeat(2,1fr)}}
+
+/* ─── Type-ahead suggest dropdown ─────────────────────────────────────── */
+.suggest-wrap{position:relative}
+.suggest-drop{position:absolute;left:0;right:0;top:calc(100% + 4px);background:#fff;
+  border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.10);
+  max-height:420px;overflow:auto;z-index:200;display:none}
+.suggest-drop.open{display:block}
+.suggest-row{padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer;
+  display:grid;grid-template-columns:1fr auto;gap:4px 12px;align-items:center}
+.suggest-row:last-child{border-bottom:none}
+.suggest-row:hover,.suggest-row.active{background:var(--surface)}
+.suggest-row .name{font-weight:600;color:var(--text);font-size:13px}
+.suggest-row .meta{font-size:11px;color:var(--muted);font-family:'SF Mono',Consolas,monospace}
+.suggest-row .alias-tag{display:inline-block;background:#e0f2fe;color:#075985;
+  font-size:10px;padding:1px 6px;border-radius:10px;margin-left:6px}
+.suggest-row .right{text-align:right;font-size:11px;color:var(--muted)}
+.suggest-row .right .amt{display:block;font-weight:700;color:var(--accent2);font-size:13px}
+.suggest-row .sim{display:inline-block;background:var(--surface);color:var(--text2);
+  font-size:10px;padding:1px 5px;border-radius:8px;margin-left:6px}
+.suggest-empty{padding:14px;text-align:center;color:var(--muted);font-size:12px}
+.suggest-hint{padding:6px 12px;background:var(--surface);font-size:10px;
+  color:var(--muted);border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.5px}
+
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:14px 16px;text-align:center}
+.stat .num{font-size:28px;font-weight:700;color:var(--accent2);line-height:1}
+.stat .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.6px;margin-top:6px}
+
+/* ─── Tables ─────────────────────────────────────────────────────────────── */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+th{background:var(--surface);font-weight:600;color:var(--text2);font-size:11px;
+  text-transform:uppercase;letter-spacing:.5px;position:sticky;top:0}
+tr:hover td{background:#f8fffe}
+td.mono{font-family:'SF Mono',Consolas,monospace;font-size:12px}
+td.amount{font-weight:700;color:var(--accent2)}
+td.right,th.right{text-align:right}
+
+/* ─── Pills ──────────────────────────────────────────────────────────────── */
+.pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600}
+.pill.ok{background:#dcfce7;color:#15803d}
+.pill.err{background:#fee2e2;color:#dc2626}
+.pill.warn{background:#fef3c7;color:#b45309}
+.pill.info{background:#dbeafe;color:#1d4ed8}
+.pill.muted{background:#f1f5f9;color:#64748b}
+.pill.purple{background:#ede9fe;color:#7c3aed}
+.pill.orange{background:#ffedd5;color:#c2410c}
+
+/* ─── Buttons ────────────────────────────────────────────────────────────── */
+.btn{background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:7px;
+  cursor:pointer;font-size:13px;font-weight:500;transition:background .15s;font-family:inherit}
+.btn:hover{background:var(--accent2)}
+.btn.sm{padding:5px 10px;font-size:12px}
+.btn.danger{background:var(--err)}
+.btn.danger:hover{background:#b91c1c}
+.btn.secondary{background:#fff;color:var(--accent);border:1.5px solid var(--accent)}
+.btn.secondary:hover{background:var(--surface)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+
+/* ─── Form ───────────────────────────────────────────────────────────────── */
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+input,select,textarea{padding:7px 10px;border:1.5px solid var(--border);border-radius:7px;
+  font-size:13px;font-family:inherit;outline:none;transition:border-color .2s;background:#fff}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+label{font-size:12px;color:var(--muted);font-weight:500;display:block;margin-bottom:4px}
+.form-group{margin-bottom:12px}
+
+/* ─── Tabs (content sections) ────────────────────────────────────────────── */
+.tab{display:none}.tab.active{display:block}
+
+/* ─── Toast ──────────────────────────────────────────────────────────────── */
+#toast{position:fixed;bottom:24px;right:24px;background:#1e293b;color:#fff;
+  padding:12px 18px;border-radius:8px;font-size:13px;font-weight:500;
+  box-shadow:0 8px 24px rgba(0,0,0,.2);display:none;z-index:9998;max-width:340px}
+#toast.ok{background:var(--ok)}#toast.err{background:var(--err)}
+
+/* ─── Pagination ─────────────────────────────────────────────────────────── */
+.pager{display:flex;gap:8px;align-items:center;margin-top:12px;justify-content:flex-end}
+.pager span{font-size:12px;color:var(--muted)}
+
+/* ─── Empty State ────────────────────────────────────────────────────────── */
+.empty{text-align:center;padding:40px;color:var(--muted);font-size:13px}
+.empty .icon{font-size:36px;margin-bottom:8px}
+
+/* ─── Detail Panel ───────────────────────────────────────────────────────── */
+#detailPanel{position:fixed;top:0;right:-520px;width:500px;height:100vh;
+  background:#fff;box-shadow:-4px 0 30px rgba(0,0,0,.15);overflow-y:auto;
+  z-index:500;transition:right .25s ease;border-left:1px solid var(--border);padding:0}
+#detailPanel.open{right:0}
+.panel-header{background:var(--accent);color:#fff;padding:16px 20px;
+  display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:10}
+.panel-header h3{flex:1;font-size:16px;font-weight:600}
+.panel-body{padding:20px}
+.detail-row{display:flex;gap:8px;margin-bottom:8px;font-size:13px}
+.detail-row .lbl{color:var(--muted);min-width:140px;font-weight:500}
+.detail-row .val{color:var(--text);word-break:break-all}
+
+/* ─── Modal ──────────────────────────────────────────────────────────────── */
+#modalOverlay{position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:800;
+  display:none;align-items:center;justify-content:center;backdrop-filter:blur(2px)}
+#modalOverlay.open{display:flex}
+#modal{background:#fff;border-radius:12px;width:500px;max-width:95vw;
+  box-shadow:0 20px 60px rgba(0,0,0,.3);overflow:hidden}
+.modal-head{background:var(--accent);color:#fff;padding:16px 20px;display:flex;align-items:center;gap:12px}
+.modal-head h3{flex:1;font-size:16px;font-weight:600}
+.modal-body{padding:20px}
+.modal-footer{padding:12px 20px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end}
+
+/* ─── Responsive ──────────────────────────────────────────────────────────── */
+@media(max-width:600px){
+  header h1{font-size:14px}
+  main{padding:12px}
+  nav button{padding:12px 14px;font-size:12px}
+  .stat-grid{grid-template-columns:repeat(2,1fr)}
+}
+</style>
+</head>
+<body>
+
+<!-- ════════════════════ LOGIN ════════════════════ -->
+<div id="loginOverlay">
+  <div id="loginBox">
+    <h2>💰 FPE Payroll Dashboard</h2>
+    <p>Enter your internal API key to continue. It will be saved locally in your browser.</p>
+    <input id="keyInput" type="password" placeholder="fk_..." autofocus onkeydown="if(event.key==='Enter')doLogin()">
+    <button class="btn" onclick="doLogin()">Sign In →</button>
+    <p id="loginErr"></p>
+  </div>
+</div>
+
+<!-- ════════════════════ APP ═════════════════════ -->
+<div id="app" style="display:none;flex-direction:column;min-height:100vh">
+
+<header>
+  <span style="font-size:22px">💸</span>
+  <h1>FPE Payroll Engine</h1>
+  <span class="spacer"></span>
+  <span id="healthBadge" class="badge">—</span>
+  <span id="syncBadge" class="badge muted" style="font-size:11px">—</span>
+  <button class="btn sm" onclick="refreshCurrent()" style="margin-left:4px">⟳</button>
+  <button class="btn sm secondary" onclick="logout()">Logout</button>
+</header>
+
+<nav>
+  <button class="active" data-tab="overview" onclick="navigate('overview')">📊 Overview</button>
+  <button data-tab="transactions" onclick="navigate('transactions')">💸 Transactions</button>
+  <button data-tab="search" onclick="navigate('search')">🔍 Search</button>
+  <button data-tab="employees" onclick="navigate('employees')">👥 Employees</button>
+  <button data-tab="unmatched" onclick="navigate('unmatched')">❓ Unmatched</button>
+  <button data-tab="review" onclick="navigate('review')">🛡️ Review Queue</button>
+  <button data-tab="sync" onclick="navigate('sync')">🔄 Sync</button>
+  <button data-tab="manual" onclick="navigate('manual')">✏️ Manual Entry</button>
+  <button data-tab="cash" onclick="navigate('cash')">💵 Cash</button>
+  <button data-tab="income" onclick="navigate('income')">📥 Income</button>
+</nav>
+
+<main>
+  <div id="banner"></div>
+
+  <!-- ══ OVERVIEW ══ -->
+  <section id="tab-overview" class="tab active">
+    <div class="stat-grid" id="overviewStats">
+      <div class="stat"><div class="num">—</div><div class="lbl">Total Txns</div></div>
+      <div class="stat"><div class="num">—</div><div class="lbl">Total Employees</div></div>
+      <div class="stat"><div class="num">—</div><div class="lbl">Pending (queue)</div></div>
+      <div class="stat"><div class="num">—</div><div class="lbl">Msgs Ingested</div></div>
+    </div>
+    <div class="stat-grid" id="methodStats"></div>
+
+    <div class="card">
+      <h2>📆 This Month's Summary</h2>
+      <div id="monthSummary" class="stat-grid">
+        <div class="stat"><div class="num">—</div><div class="lbl">Paid This Month</div></div>
+        <div class="stat"><div class="num">—</div><div class="lbl">Advances</div></div>
+        <div class="stat"><div class="num">—</div><div class="lbl">Transactions</div></div>
+        <div class="stat"><div class="num">—</div><div class="lbl">Unmatched</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>🕐 Recent Transactions</h2>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        <div><label>From</label><input id="ovFrom" type="date" oninput="loadOverviewRecent(true)" style="width:140px"></div>
+        <div><label>To</label><input id="ovTo" type="date" oninput="loadOverviewRecent(true)" style="width:140px"></div>
+        <button class="btn sm secondary" onclick="ovPreset('today')">Today</button>
+        <button class="btn sm secondary" onclick="ovPreset('3d')">Last 3 days</button>
+        <button class="btn sm secondary" onclick="ovPreset('7d')">Last 7 days</button>
+        <button class="btn sm secondary" onclick="ovPreset('30d')">Last 30 days</button>
+        <button class="btn sm secondary" onclick="ovPreset('all')">All time</button>
+      </div>
+      <div id="ovSummary" class="stat-grid compact"></div>
+      <div class="tbl-wrap" id="recentTxns"><div class="empty"><div class="icon">⏳</div>Loading…</div></div>
+      <div class="pager" style="flex-wrap:wrap;gap:6px">
+        <span id="ovPagerInfo"></span>
+        <button class="btn sm secondary" id="ovFirst" onclick="ovGoto(1)">« First</button>
+        <button class="btn sm secondary" id="ovPrev" onclick="ovPage(-1)" disabled>‹ Prev</button>
+        <span style="font-size:12px;color:var(--muted)">Jump to:</span>
+        <input id="ovJumpInput" type="number" min="1" style="width:64px" onkeydown="if(event.key==='Enter')ovJumpFromInput()">
+        <button class="btn sm secondary" onclick="ovJumpFromInput()">Go</button>
+        <button class="btn sm secondary" id="ovNext" onclick="ovPage(1)" disabled>Next ›</button>
+        <button class="btn sm secondary" id="ovLast" onclick="ovGotoLast()">Last »</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ TRANSACTIONS ══ -->
+  <section id="tab-transactions" class="tab">
+    <div class="card">
+      <h2>💸 Transactions</h2>
+      <div style="margin-bottom:10px">
+        <button class="btn sm" onclick="openAddPayment()" style="background:var(--accent);color:#fff">➕ Add Payment</button>
+      </div>
+      <div class="row">
+        <div><label>Period (YYYY-MM)</label>
+          <input id="txnPeriod" type="month" oninput="loadTransactions(true)" style="width:160px"></div>
+        <div><label>From</label>
+          <input id="txnFrom" type="date" oninput="loadTransactions(true)" style="width:150px"></div>
+        <div><label>To</label>
+          <input id="txnTo" type="date" oninput="loadTransactions(true)" style="width:150px"></div>
+        <div><label>Method</label>
+          <select id="txnMethod" onchange="loadTransactions(true)">
+            <option value="">All methods</option>
+            <option value="bkash">bKash</option>
+            <option value="nagad">Nagad</option>
+            <option value="cash">Cash</option>
+            <option value="bank">Bank</option>
+          </select></div>
+        <div><label>Employee</label>
+          <input id="txnEmpId" type="number" placeholder="ID…" style="width:80px" oninput="loadTransactions(true)"></div>
+        <button class="btn sm" onclick="loadTransactions(true)">Filter</button>
+        <button class="btn sm secondary" onclick="clearTxnFilters()">Clear</button>
+      </div>
+      <div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap">
+        <span style="font-size:12px;color:var(--muted);align-self:center">Quick:</span>
+        <button class="btn sm secondary" onclick="txnPreset('today')">Today</button>
+        <button class="btn sm secondary" onclick="txnPreset('yesterday')">Yesterday</button>
+        <button class="btn sm secondary" onclick="txnPreset('3d')">Last 3 days</button>
+        <button class="btn sm secondary" onclick="txnPreset('7d')">Last 7 days</button>
+        <button class="btn sm secondary" onclick="txnPreset('30d')">Last 30 days</button>
+        <button class="btn sm secondary" onclick="txnPreset('month')">This month</button>
+        <button class="btn sm secondary" onclick="txnPreset('all')">All time</button>
+      </div>
+      <div id="txnSummary" class="stat-grid compact" style="margin-top:10px"></div>
+      <div id="txnCount" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
+      <div class="tbl-wrap" id="txnTable"><div class="empty"><div class="icon">⏳</div>Loading…</div></div>
+      <div class="pager" style="flex-wrap:wrap;gap:6px">
+        <span id="txnPagerInfo"></span>
+        <button class="btn sm secondary" id="txnFirst" onclick="txnGoto(1)">« First</button>
+        <button class="btn sm secondary" id="txnPrev" onclick="txnPage(-1)" disabled>‹ Prev</button>
+        <span style="font-size:12px;color:var(--muted)">Jump to:</span>
+        <input id="txnJumpInput" type="number" min="1" style="width:64px" onkeydown="if(event.key==='Enter')txnJumpFromInput()">
+        <button class="btn sm secondary" onclick="txnJumpFromInput()">Go</button>
+        <button class="btn sm secondary" id="txnNext" onclick="txnPage(1)" disabled>Next ›</button>
+        <button class="btn sm secondary" id="txnLast" onclick="txnGotoLast()">Last »</button>
+        <span style="font-size:12px;color:var(--muted);margin-left:8px">Size:</span>
+        <select id="txnPageSize" onchange="txnChangePageSize()">
+          <option value="20" selected>20</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+        </select>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ SEARCH (read-only employee + transaction history) ══ -->
+  <section id="tab-search" class="tab">
+    <div class="card">
+      <h2>🔍 Employee Search</h2>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:12px">
+        Read-only lookup by name, phone, or employee ID. Identity resolution honours canonical employees;
+        transaction history is returned exactly as recorded.
+      </p>
+      <div class="row" style="align-items:flex-end">
+        <div class="suggest-wrap" style="flex:1;min-width:240px">
+          <label>Smart search (name / alias / phone / employee ID)</label>
+          <input id="empSearchInput" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Type to suggest — fuzzy, alias-aware, typo-tolerant…" style="width:100%">
+          <div id="suggestDrop" class="suggest-drop" role="listbox"></div>
+        </div>
+        <div><label>From</label><input id="empSearchFrom" type="date" style="width:150px"></div>
+        <div><label>To</label><input id="empSearchTo" type="date" style="width:150px"></div>
+        <button class="btn sm secondary" onclick="clearEmpSearchFilters()">Clear</button>
+      </div>
+      <div class="row" style="margin-top:8px;gap:6px">
+        <button class="btn sm secondary" onclick="empPreset('7d')">Last 7 days</button>
+        <button class="btn sm secondary" onclick="empPreset('30d')">Last 30 days</button>
+        <button class="btn sm secondary" onclick="empPreset('month')">This month</button>
+        <button class="btn sm secondary" onclick="empPreset('all')">All time</button>
+      </div>
+      <div id="empSearchResults" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card" id="empHistoryCard" style="display:none">
+      <div id="empHistorySummary"></div>
+      <div id="empHistoryFilters" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
+      <div class="tbl-wrap" id="empHistoryTable"><div class="empty"><div class="icon">⏳</div>Loading…</div></div>
+      <div class="pager">
+        <span id="empHistoryPagerInfo"></span>
+        <button class="btn sm secondary" id="empHistoryPrev" onclick="empHistoryPage(-1)" disabled>‹ Prev</button>
+        <button class="btn sm secondary" id="empHistoryNext" onclick="empHistoryPage(1)" disabled>Next ›</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ EMPLOYEES ══ -->
+  <section id="tab-employees" class="tab">
+    <div class="card">
+      <h2>👥 Employees</h2>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <button class="btn sm" onclick="openAddEmployee()" style="background:var(--accent);color:#fff">➕ Add Employee</button>
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <div><label>Status</label>
+          <select id="empStatus" onchange="loadEmployees(true)">
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </select></div>
+        <div><label>Sort</label>
+          <select id="empSort" onchange="loadEmployees(true)">
+            <option value="name_asc" selected>Name A → Z</option>
+            <option value="name_desc">Name Z → A</option>
+            <option value="id_asc">ID ascending</option>
+            <option value="id_desc">ID descending</option>
+          </select></div>
+        <div style="flex:1;min-width:220px"><label>Search (name / phone / id)</label>
+          <input id="empQuery" type="text" placeholder="Type and press Enter…"
+                 onkeydown="if(event.key==='Enter')loadEmployees(true)" style="width:100%"></div>
+        <button class="btn sm" onclick="loadEmployees(true)">Search</button>
+        <button class="btn sm secondary" onclick="document.getElementById('empQuery').value='';loadEmployees(true)">Clear</button>
+      </div>
+      <div id="empCount" style="font-size:12px;color:var(--muted);margin:8px 0"></div>
+      <div class="tbl-wrap" id="empTable"><div class="empty"><div class="icon">⏳</div>Loading…</div></div>
+      <div class="pager" style="flex-wrap:wrap;gap:6px">
+        <span id="empPagerInfo"></span>
+        <button class="btn sm secondary" id="empFirst" onclick="empGoto(1)">« First</button>
+        <button class="btn sm secondary" id="empPrev" onclick="empPage(-1)" disabled>‹ Prev</button>
+        <span style="font-size:12px;color:var(--muted)">Jump to:</span>
+        <input id="empJumpInput" type="number" min="1" style="width:64px" onkeydown="if(event.key==='Enter')empJumpFromInput()">
+        <button class="btn sm secondary" onclick="empJumpFromInput()">Go</button>
+        <button class="btn sm secondary" id="empNext" onclick="empPage(1)" disabled>Next ›</button>
+        <button class="btn sm secondary" id="empLast" onclick="empGotoLast()">Last »</button>
+        <span style="font-size:12px;color:var(--muted);margin-left:8px">Size:</span>
+        <select id="empPageSize" onchange="empChangePageSize()">
+          <option value="20">20</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+        </select>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ UNMATCHED ══ -->
+  <section id="tab-unmatched" class="tab">
+    <div class="card">
+      <h2>❓ Unmatched Messages</h2>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Messages the parser could not confidently match to a transaction. Review and mark as resolved.</p>
+      <div class="row">
+        <label style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="showReviewed" onchange="loadUnmatched()"> Show reviewed
+        </label>
+        <button class="btn sm" onclick="loadUnmatched()">Refresh</button>
+      </div>
+      <div class="tbl-wrap" id="unmatchedTable"><div class="empty"><div class="icon">⏳</div>Loading…</div></div>
+    </div>
+  </section>
+
+  <!-- ══ REVIEW QUEUE ══ -->
+  <section id="tab-review" class="tab">
+    <div id="reconBanner"></div>
+
+    <div class="stat-grid compact" id="reviewSummary">
+      <div class="stat"><div class="num">—</div><div class="lbl">Pending Review</div></div>
+      <div class="stat"><div class="num">—</div><div class="lbl">Low Confidence</div></div>
+      <div class="stat"><div class="num">—</div><div class="lbl">Pending Amount</div></div>
+      <div class="stat"><div class="num">—</div><div class="lbl">Rejected</div></div>
+      <div class="stat"><div class="num">—</div><div class="lbl">Promoted Today</div></div>
+      <div class="stat"><div class="num">—</div><div class="lbl">DLQ</div></div>
+    </div>
+
+    <div class="card">
+      <h2>🛡️ Pending Accounting Candidates</h2>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:12px">
+        Money detected by the parser that has <b>not yet</b> been promoted into the immutable ledger.
+        Approve, reject, or reassign — every action is audit-logged. The ledger is never edited.
+      </p>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <div><label>Status</label>
+          <select id="rvStatus" onchange="loadReview(true)">
+            <option value="pending" selected>Pending</option>
+            <option value="promoted">Promoted</option>
+            <option value="dismissed">Dismissed</option>
+            <option value="duplicate">Duplicate</option>
+          </select></div>
+        <div><label>Reason</label>
+          <select id="rvReason" onchange="loadReview(true)">
+            <option value="">(any)</option>
+            <option value="no_amount_in_parse">no_amount_in_parse</option>
+            <option value="no_employee_match">no_employee_match</option>
+            <option value="low_confidence">low_confidence</option>
+          </select></div>
+        <div><label>Confidence</label>
+          <select id="rvConfBand" onchange="loadReview(true)">
+            <option value="">(any)</option>
+            <option value="low">Low (&lt;0.5)</option>
+            <option value="med">Medium (0.5–0.8)</option>
+            <option value="high">High (≥0.8)</option>
+          </select></div>
+        <div><label>Page size</label>
+          <select id="rvPageSize" onchange="loadReview(true)">
+            <option value="20">20</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select></div>
+        <button class="btn sm" onclick="loadReview(true)">⟳ Refresh</button>
+      </div>
+
+      <div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap;border-top:1px dashed var(--border);padding-top:8px">
+        <span style="font-size:12px;color:var(--muted);align-self:center">Bulk:</span>
+        <button class="btn sm secondary" onclick="bulkReview('dismiss')">Reject</button>
+        <button class="btn sm secondary" onclick="bulkReview('duplicate')">Mark Duplicate</button>
+        <button class="btn sm secondary" onclick="bulkReview('requeue')">Requeue Parser</button>
+        <span id="rvSelCount" style="font-size:12px;color:var(--muted);margin-left:8px">0 selected</span>
+      </div>
+
+      <div id="rvCount" style="font-size:12px;color:var(--muted);margin:8px 0"></div>
+      <div class="tbl-wrap" id="rvTable"><div class="empty"><div class="icon">⏳</div>Loading…</div></div>
+      <div class="pager" style="flex-wrap:wrap;gap:6px">
+        <span id="rvPagerInfo"></span>
+        <button class="btn sm secondary" id="rvFirst" onclick="rvGoto(1)">« First</button>
+        <button class="btn sm secondary" id="rvPrev" onclick="rvPage(-1)" disabled>‹ Prev</button>
+        <span style="font-size:12px;color:var(--muted)">Jump to:</span>
+        <input id="rvJumpInput" type="number" min="1" style="width:64px" onkeydown="if(event.key==='Enter')rvJumpFromInput()">
+        <button class="btn sm secondary" onclick="rvJumpFromInput()">Go</button>
+        <button class="btn sm secondary" id="rvNext" onclick="rvPage(1)" disabled>Next ›</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ SYNC ══ -->
+  <section id="tab-sync" class="tab">
+    <div class="card">
+      <h2>🔄 Sync & Processing Status</h2>
+      <div id="syncStatus"><div class="empty"><div class="icon">⏳</div>Loading…</div></div>
+      <div style="margin-top:16px;display:flex;gap:8px">
+        <button class="btn" onclick="triggerSync()">▶ Trigger Sync Now</button>
+        <button class="btn secondary" onclick="loadSync()">⟳ Refresh</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>🏥 Module Health</h2>
+      <div id="healthDetail"><div class="empty"><div class="icon">⏳</div>Loading…</div></div>
+    </div>
+  </section>
+
+  <!-- ══ MANUAL ENTRY ══ -->
+  <section id="tab-manual" class="tab">
+    <div class="card">
+      <h2>✏️ Create Manual Transaction</h2>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:16px">Use for cash payments, corrections, or transactions not captured via WhatsApp.</p>
+      <div style="max-width:480px">
+        <div class="form-group">
+          <label>Employee ID *</label>
+          <input id="mEmpId" type="number" placeholder="e.g. 3" style="width:100%">
+        </div>
+        <div class="form-group">
+          <label>Amount (BDT) *</label>
+          <input id="mAmount" type="number" step="1" min="1" placeholder="e.g. 5000" style="width:100%">
+        </div>
+        <div class="form-group">
+          <label>Payout Method *</label>
+          <select id="mMethod" style="width:100%">
+            <option value="bkash">bKash</option>
+            <option value="nagad">Nagad</option>
+            <option value="cash">Cash</option>
+            <option value="bank">Bank Transfer</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Payout Phone</label>
+          <input id="mPhone" type="text" placeholder="01XXXXXXXXX" style="width:100%">
+        </div>
+        <div class="form-group">
+          <label>Date *</label>
+          <input id="mDate" type="date" style="width:100%">
+        </div>
+        <div class="form-group">
+          <label>Category</label>
+          <select id="mCategory" style="width:100%">
+            <option value="salary">Salary</option>
+            <option value="advance">Advance</option>
+            <option value="bonus">Bonus</option>
+            <option value="deduction">Deduction</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Reason / Note *</label>
+          <input id="mReason" type="text" placeholder="Brief note…" style="width:100%">
+        </div>
+        <button class="btn" onclick="submitManual()">Create Transaction</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>↩️ Reverse Transaction</h2>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:16px">Creates a reversal entry for an existing transaction. The original is NOT deleted.</p>
+      <div style="max-width:480px">
+        <div class="form-group">
+          <label>Transaction ID *</label>
+          <input id="rTxnId" type="number" placeholder="e.g. 42" style="width:100%">
+        </div>
+        <div class="form-group">
+          <label>Reason *</label>
+          <input id="rReason" type="text" placeholder="Reason for reversal…" style="width:100%">
+        </div>
+        <button class="btn danger" onclick="submitReversal()">Reverse Transaction</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ CASH ══ -->
+  <section id="tab-cash" class="tab">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:8px;flex-wrap:wrap">
+      <h2 style="margin:0;font-size:1.1rem;color:var(--accent)">💵 Cash Transactions</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn sm secondary" onclick="loadCash(true)">⟳ Refresh</button>
+        <button class="btn sm secondary" onclick="exportCashCSV()">⬇ CSV</button>
+      </div>
+    </div>
+    <div class="stat-grid" id="cashStats">
+      <div class="stat"><div class="num" id="cashTotal">—</div><div class="lbl">Total Transactions</div></div>
+      <div class="stat"><div class="num" id="cashAmount">—</div><div class="lbl">Total Amount (৳)</div></div>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:1;min-width:140px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Search</label>
+          <input id="cashQ" type="search" placeholder="name / phone / ref…" oninput="cashSearchDebounce()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+        </div>
+        <div style="min-width:100px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">From</label>
+          <input id="cashFrom" type="date" onchange="loadCash(true)" style="padding:7px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+        </div>
+        <div style="min-width:100px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">To</label>
+          <input id="cashTo" type="date" onchange="loadCash(true)" style="padding:7px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+        </div>
+        <div style="min-width:120px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Sender Phone</label>
+          <input id="cashSender" type="text" placeholder="01XXXXXXXXX" oninput="cashSearchDebounce()" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;width:100%">
+        </div>
+        <button class="btn sm secondary" onclick="clearCashFilters()">Clear</button>
+      </div>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>Date</th><th>Employee</th><th>Amount (৳)</th><th>Sender</th><th>Method</th><th>Ref</th><th>Period</th><th></th>
+        </tr></thead>
+        <tbody id="cashBody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="pager" id="cashPager" style="display:none">
+      <button onclick="cashPage(-1)" id="cashPrev">‹ Prev</button>
+      <span id="cashPageInfo"></span>
+      <button onclick="cashPage(1)" id="cashNext">Next ›</button>
+    </div>
+
+    <!-- ── Shorthand / Staging Payments ── -->
+    <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:8px;flex-wrap:wrap">
+        <h3 style="margin:0;font-size:1rem;color:var(--accent2)">📋 WhatsApp Shorthand Staging</h3>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="stagingStatusFilter" onchange="loadStagingPayments(true)" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--surface2);color:inherit">
+            <option value="">All Status</option>
+            <option value="pending">Pending</option>
+            <option value="auto_approved">Auto Approved</option>
+            <option value="unmatched">Unmatched</option>
+          </select>
+          <input id="stagingQ" type="search" placeholder="name / phone…" oninput="stagingSearchDebounce()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;width:140px">
+          <button class="btn sm secondary" onclick="loadStagingPayments(true)">⟳ Refresh</button>
+        </div>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th>Date</th><th>Employee</th><th>Mobile</th><th>Amount (৳)</th><th>Method</th><th>Sender</th><th>Status</th>
+          </tr></thead>
+          <tbody id="stagingBody"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="pager" id="stagingPager" style="display:none">
+        <button onclick="stagingPage(-1)" id="stagingPrev">‹ Prev</button>
+        <span id="stagingPageInfo"></span>
+        <button onclick="stagingPage(1)" id="stagingNext">Next ›</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ INCOME ══ -->
+  <section id="tab-income" class="tab">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:8px;flex-wrap:wrap">
+      <h2 style="margin:0;font-size:1.1rem;color:var(--accent)">📥 Income Transactions</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn sm secondary" onclick="loadIncome(true)">⟳ Refresh</button>
+        <button class="btn sm secondary" onclick="exportIncomeCSV()">⬇ CSV</button>
+      </div>
+    </div>
+    <div class="stat-grid" id="incomeStats">
+      <div class="stat"><div class="num" id="incomeTotal">—</div><div class="lbl">Total Transactions</div></div>
+      <div class="stat"><div class="num" id="incomeTotalAmt">—</div><div class="lbl">Total Amount (৳)</div></div>
+      <div class="stat"><div class="num" id="incomeToday">—</div><div class="lbl">Today (৳)</div></div>
+      <div class="stat"><div class="num" id="incomeMonth">—</div><div class="lbl">This Month (৳)</div></div>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:1;min-width:140px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Search</label>
+          <input id="incomeQ" type="search" placeholder="name / phone / ref…" oninput="incomeSearchDebounce()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+        </div>
+        <div style="min-width:100px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Period</label>
+          <input id="incomePeriod" type="month" onchange="loadIncome(true)" style="padding:7px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+        </div>
+        <div style="min-width:100px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">From</label>
+          <input id="incomeFrom" type="date" onchange="loadIncome(true)" style="padding:7px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+        </div>
+        <div style="min-width:100px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">To</label>
+          <input id="incomeTo" type="date" onchange="loadIncome(true)" style="padding:7px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+        </div>
+        <div style="min-width:120px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Reporter Phone</label>
+          <input id="incomeReporter" type="text" placeholder="01XXXXXXXXX" oninput="incomeSearchDebounce()" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;width:100%">
+        </div>
+        <button class="btn sm secondary" onclick="clearIncomeFilters()">Clear</button>
+      </div>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>Date</th><th>Employee</th><th>Amount (৳)</th><th>Reported By</th><th>Period</th><th>Ref</th><th></th>
+        </tr></thead>
+        <tbody id="incomeBody"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="pager" id="incomePager" style="display:none">
+      <button onclick="incomePage(-1)" id="incomePrev">‹ Prev</button>
+      <span id="incomePageInfo"></span>
+      <button onclick="incomePage(1)" id="incomeNext">Next ›</button>
+    </div>
+  </section>
+
+</main>
+</div>
+
+<!-- ════════════════ DETAIL PANEL ════════════════ -->
+<div id="detailPanel">
+  <div class="panel-header">
+    <h3 id="panelTitle">Details</h3>
+    <button class="btn sm secondary" onclick="closePanel()" style="background:rgba(255,255,255,.15);border:none;color:#fff">✕</button>
+  </div>
+  <div class="panel-body" id="panelBody"></div>
+</div>
+<div id="panelBg" onclick="closePanel()" style="display:none;position:fixed;inset:0;z-index:499;background:rgba(0,0,0,.2)"></div>
+
+<!-- ════════════════ MODAL ════════════════ -->
+<div id="modalOverlay">
+  <div id="modal">
+    <div class="modal-head">
+      <h3 id="modalTitle">Confirm</h3>
+      <button onclick="closeModal()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-footer" id="modalFooter"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+// ── State ────────────────────────────────────────────────────────────────────
+let API_KEY = '';
+let currentTab = 'overview';
+let txnOffset = 0, txnTotal = 0, txnPages = 1;
+let TXN_LIMIT = 20;
+// Overview Recent Transactions pagination state
+let ovOffset = 0, ovTotal = 0, ovPages = 1;
+const OV_LIMIT = 20;
+// Employees pagination state
+let empOffset = 0, empTotal = 0, empPages = 1;
+let EMP_LIMIT = 50;
+// ── Employee Search state ────────────────────────────────────────────────────
+let empSearchTimer = null;
+let empSearchSeq = 0;
+let empSelected = null;       // canonical employee_id currently shown in history
+let empHistoryPageNum = 1;
+const EMP_HISTORY_PAGE_SIZE = 20;
+// ── Cash state ───────────────────────────────────────────────────────────────
+let cashCurrentPage = 1, cashTotalPages = 1, cashTotalRecs = 0;
+let cashSearchTimer = null;
+// ── Income state ─────────────────────────────────────────────────────────────
+let incomeCurrentPage = 1, incomeTotalPages = 1, incomeTotalRecs = 0;
+let incomeSearchTimer = null;
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+async function doLogin() {
+  const key = document.getElementById('keyInput').value.trim();
+  if (!key) { document.getElementById('loginErr').textContent = 'API key required.'; return; }
+  try {
+    const r = await fetch('/api/fpe/health', { headers: { 'X-Internal-Key': key } });
+    if (!r.ok) { document.getElementById('loginErr').textContent = 'Invalid key or server error (' + r.status + ')'; return; }
+    API_KEY = key;
+    localStorage.setItem('fpe_api_key', key);
+    document.getElementById('loginOverlay').style.display = 'none';
+    document.getElementById('app').style.display = 'flex';
+    initApp();
+  } catch(e) {
+    document.getElementById('loginErr').textContent = 'Cannot reach server: ' + e.message;
+  }
+}
+
+function logout() {
+  localStorage.removeItem('fpe_api_key');
+  API_KEY = '';
+  location.reload();
+}
+
+// ── API Helper ───────────────────────────────────────────────────────────────
+async function api(path, opts = {}) {
+  const headers = { 'X-Internal-Key': API_KEY, 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  const r = await fetch('/api/fpe' + path, { ...opts, headers });
+  if (!r.ok) {
+    const err = await r.text().catch(() => r.statusText);
+    throw new Error(err || r.statusText);
+  }
+  return r.json();
+}
+
+// ── Toast ────────────────────────────────────────────────────────────────────
+function showToast(msg, type = '') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = type;
+  t.style.display = 'block';
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.style.display = 'none', 3500);
+}
+
+// ── Tab Switching / SPA Routing ──────────────────────────────────────────────
+const VALID_TABS = ['overview','transactions','search','employees','unmatched','review','sync','manual','cash','income'];
+
+function tabFromPath() {
+  const p = location.pathname.replace(/\/+$/, '');
+  if (p === '' || p === '/payroll') return 'overview';
+  const m = p.match(/^\/payroll\/([a-z]+)$/);
+  if (m && VALID_TABS.includes(m[1])) return m[1];
+  return 'overview';
+}
+
+function pathForTab(name) {
+  return name === 'overview' ? '/payroll' : '/payroll/' + name;
+}
+
+function activateTab(name) {
+  if (!VALID_TABS.includes(name)) name = 'overview';
+  document.querySelectorAll('.tab').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('nav button[data-tab]').forEach(b => b.classList.remove('active'));
+  const sec = document.getElementById('tab-' + name);
+  if (sec) sec.classList.add('active');
+  const btn = document.querySelector(`nav button[data-tab="${name}"]`);
+  if (btn) btn.classList.add('active');
+  currentTab = name;
+  loadTab(name);
+}
+
+function navigate(name, replace = false) {
+  const target = pathForTab(name);
+  if (location.pathname !== target) {
+    if (replace) history.replaceState({tab: name}, '', target);
+    else         history.pushState({tab: name}, '', target);
+  }
+  activateTab(name);
+}
+
+// Backward-compatible — old inline onclick="switchTab('x', this)" still works.
+function switchTab(name) { navigate(name); }
+
+window.addEventListener('popstate', () => activateTab(tabFromPath()));
+
+function loadTab(name) {
+  if (name === 'overview')      loadOverview();
+  if (name === 'transactions')  { txnOffset = 0; loadTransactions(); }
+  if (name === 'search')        initEmpSearchTab();
+  if (name === 'employees')     loadEmployees();
+  if (name === 'unmatched')     loadUnmatched();
+  if (name === 'review')        loadReview(true);
+  if (name === 'sync')          loadSync();
+  if (name === 'cash')          { cashCurrentPage = 1; stagingCurrentPage = 1; loadCash(true); loadStagingPayments(true); }
+  if (name === 'income')        { incomeCurrentPage = 1; loadIncome(true); }
+}
+
+function refreshCurrent() { loadTab(currentTab); loadHeaderStatus(); }
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+function initApp() {
+  // Set default date values
+  const today = new Date();
+  const ym = today.toISOString().slice(0,7);
+  const el = document.getElementById('txnPeriod');
+  if (el) el.value = ym;
+  const dateEl = document.getElementById('mDate');
+  if (dateEl) dateEl.value = today.toISOString().slice(0,10);
+
+  loadHeaderStatus();
+  // Activate tab from URL (deep-link / refresh support)
+  const initialTab = tabFromPath();
+  history.replaceState({tab: initialTab}, '', pathForTab(initialTab));
+  activateTab(initialTab);
+  setInterval(loadHeaderStatus, 15000);
+  setInterval(() => { if (currentTab === 'sync') loadSync(); }, 15000);
+}
+
+// ── Header Status ─────────────────────────────────────────────────────────────
+async function loadHeaderStatus() {
+  try {
+    const h = await api('/health');
+    const hb = document.getElementById('healthBadge');
+    hb.textContent = '● ' + h.status.toUpperCase();
+    hb.className = 'badge ' + (h.status === 'ok' ? 'ok' : 'err');
+
+    const sb = document.getElementById('syncBadge');
+    sb.textContent = 'Pending: ' + h.pending_processing;
+    sb.className = 'badge ' + (h.pending_processing > 0 ? 'warn' : 'ok');
+  } catch(e) {
+    document.getElementById('healthBadge').textContent = '● ERROR';
+    document.getElementById('healthBadge').className = 'badge err';
+  }
+}
+
+// ── Overview ─────────────────────────────────────────────────────────────────
+async function loadOverview() {
+  try {
+    const [health, emps, unmatched, thisPeriod] = await Promise.allSettled([
+      api('/health'),
+      api('/employees?page=1&page_size=1'),
+      api('/unmatched?reviewed=false&limit=1'),
+      api('/transactions?period=' + new Date().toISOString().slice(0,7) + '&page=1&page_size=200'),
+    ]);
+
+    const h = health.value || {};
+    const e = emps.value || {};
+    const u = unmatched.value || {};
+    document.getElementById('overviewStats').innerHTML = `
+      <div class="stat"><div class="num">${fmtNum(h.total_transactions || 0)}</div><div class="lbl">Total Transactions</div></div>
+      <div class="stat"><div class="num">${fmtNum(e.total || 0)}</div><div class="lbl">Active Employees</div></div>
+      <div class="stat"><div class="num">${fmtNum(h.pending_processing || 0)}</div><div class="lbl">Processing Queue</div></div>
+      <div class="stat"><div class="num">${fmtNum(h.total_messages_ingested || 0)}</div><div class="lbl">Msgs Ingested</div></div>
+    `;
+
+    if (thisPeriod.status === 'fulfilled') {
+      const byMethod = {};
+      let totalAmt = 0, advAmt = 0;
+      (thisPeriod.value.transactions || []).forEach(tx => {
+        byMethod[tx.payout_method] = (byMethod[tx.payout_method] || 0) + tx.amount;
+        totalAmt += tx.amount;
+        if (tx.txn_category === 'advance') advAmt += tx.amount;
+      });
+      const txnThisMonth = thisPeriod.value.transactions || [];
+      document.getElementById('monthSummary').innerHTML = `
+        <div class="stat"><div class="num">৳${fmtAmt(totalAmt)}</div><div class="lbl">Paid This Month</div></div>
+        <div class="stat"><div class="num">৳${fmtAmt(advAmt)}</div><div class="lbl">Advances</div></div>
+        <div class="stat"><div class="num">${txnThisMonth.length}</div><div class="lbl">Transactions</div></div>
+        <div class="stat"><div class="num">${fmtNum(u.total || 0)}</div><div class="lbl">Unmatched</div></div>
+      `;
+      document.getElementById('methodStats').innerHTML =
+        Object.entries(byMethod).sort((a,b)=>b[1]-a[1]).map(([m,amt]) =>
+          `<div class="stat"><div class="num" style="font-size:20px">৳${fmtAmt(amt)}</div><div class="lbl">${(m||'').toUpperCase()}</div></div>`
+        ).join('') || '<div class="stat"><div class="num" style="font-size:14px;color:var(--muted)">No data</div><div class="lbl">This Month</div></div>';
+    }
+
+    await loadOverviewRecent(true);
+  } catch(e) {
+    document.getElementById('overviewStats').innerHTML = `<div class="empty"><div class="icon">⚠️</div>Error: ${e.message}</div>`;
+  }
+}
+
+async function loadOverviewRecent(resetPage = false) {
+  if (resetPage) ovOffset = 0;
+  const from = document.getElementById('ovFrom').value;
+  const to   = document.getElementById('ovTo').value;
+  let q = `?page_size=${OV_LIMIT}&page=${Math.floor(ovOffset / OV_LIMIT) + 1}`;
+  if (from) q += '&from=' + from;
+  if (to)   q += '&to=' + to;
+  document.getElementById('recentTxns').innerHTML = '<div class="empty"><div class="icon">⏳</div>Loading…</div>';
+  try {
+    const d = await api('/transactions' + q);
+    ovTotal = d.total || 0;
+    ovPages = d.pages || 1;
+    document.getElementById('recentTxns').innerHTML = renderTxnTable(d.transactions || [], true);
+    const s = d.summary || {};
+    document.getElementById('ovSummary').innerHTML = `
+      <div class="stat"><div class="num">${fmtNum(s.total||0)}</div><div class="lbl">Total Transactions</div></div>
+      <div class="stat"><div class="num">৳${fmtAmt(s.total_amount||0)}</div><div class="lbl">Total Paid</div></div>
+      <div class="stat"><div class="num" style="font-size:14px">${s.first_txn||'—'}</div><div class="lbl">First Transaction</div></div>
+      <div class="stat"><div class="num" style="font-size:14px">${s.last_txn||'—'}</div><div class="lbl">Last Transaction</div></div>`;
+    document.getElementById('ovPagerInfo').textContent = `Page ${d.page||1} / ${ovPages} · ${ovTotal} txns`;
+    document.getElementById('ovPrev').disabled  = ovOffset === 0;
+    document.getElementById('ovFirst').disabled = ovOffset === 0;
+    document.getElementById('ovNext').disabled  = ovOffset + OV_LIMIT >= ovTotal;
+    document.getElementById('ovLast').disabled  = ovOffset + OV_LIMIT >= ovTotal;
+    const ji = document.getElementById('ovJumpInput');
+    if (ji) { ji.max = String(ovPages); ji.placeholder = '1-' + ovPages; }
+  } catch(e) {
+    document.getElementById('recentTxns').innerHTML = `<div class="empty"><div class="icon">⚠️</div>${e.message}</div>`;
+  }
+}
+function ovPage(dir) { ovOffset = Math.max(0, ovOffset + dir * OV_LIMIT); loadOverviewRecent(); }
+function ovGoto(p)   { p = Math.max(1, Math.min(p, ovPages || 1)); ovOffset = (p-1)*OV_LIMIT; loadOverviewRecent(); }
+function ovGotoLast(){ ovGoto(ovPages || 1); }
+function ovJumpFromInput() { const v = parseInt(document.getElementById('ovJumpInput').value,10); if(!isNaN(v)) ovGoto(v); }
+function ovPreset(kind) {
+  const today = new Date(); const iso = d => d.toISOString().slice(0,10);
+  let from='', to='';
+  if (kind==='today')      { from = to = iso(today); }
+  else if (kind==='3d')    { const f=new Date(today); f.setDate(f.getDate()-2); from=iso(f); to=iso(today); }
+  else if (kind==='7d')    { const f=new Date(today); f.setDate(f.getDate()-6); from=iso(f); to=iso(today); }
+  else if (kind==='30d')   { const f=new Date(today); f.setDate(f.getDate()-29); from=iso(f); to=iso(today); }
+  else if (kind==='all')   { from=''; to=''; }
+  document.getElementById('ovFrom').value = from;
+  document.getElementById('ovTo').value = to;
+  loadOverviewRecent(true);
+}
+
+// ── Transactions ─────────────────────────────────────────────────────────────
+async function loadTransactions(resetPage = false) {
+  if (resetPage) txnOffset = 0;
+  const period = document.getElementById('txnPeriod').value;
+  const method = document.getElementById('txnMethod').value;
+  const empId  = document.getElementById('txnEmpId').value;
+  const from   = document.getElementById('txnFrom').value;
+  const to     = document.getElementById('txnTo').value;
+  let q = `?page_size=${TXN_LIMIT}&page=${Math.floor(txnOffset / TXN_LIMIT) + 1}`;
+  if (period) q += '&period=' + period;
+  if (method) q += '&method=' + method;
+  if (empId)  q += '&employee_id=' + empId;
+  if (from)   q += '&from=' + from;
+  if (to)     q += '&to=' + to;
+
+  document.getElementById('txnTable').innerHTML = '<div class="empty"><div class="icon">⏳</div>Loading…</div>';
+  try {
+    const d = await api('/transactions' + q);
+    txnTotal = d.total || 0;
+    txnPages = d.pages || 1;
+    const start = txnOffset + 1;
+    const end = Math.min(txnOffset + TXN_LIMIT, txnTotal);
+    document.getElementById('txnCount').textContent = txnTotal
+      ? `Showing ${start}–${end} of ${txnTotal} transactions`
+      : 'No transactions match the current filters';
+    document.getElementById('txnTable').innerHTML = renderTxnTable(d.transactions || []);
+    renderTxnSummary(d.summary || {});
+    document.getElementById('txnPagerInfo').textContent =
+      `Page ${d.page || 1} / ${txnPages}`;
+    document.getElementById('txnPrev').disabled  = txnOffset === 0;
+    document.getElementById('txnNext').disabled  = txnOffset + TXN_LIMIT >= txnTotal;
+    document.getElementById('txnFirst').disabled = txnOffset === 0;
+    document.getElementById('txnLast').disabled  = txnOffset + TXN_LIMIT >= txnTotal;
+    const ji = document.getElementById('txnJumpInput');
+    if (ji) { ji.max = String(txnPages); ji.placeholder = '1-' + txnPages; }
+  } catch(e) {
+    document.getElementById('txnTable').innerHTML = `<div class="empty"><div class="icon">⚠️</div>${e.message}</div>`;
+  }
+}
+
+function renderTxnSummary(s) {
+  const el = document.getElementById('txnSummary');
+  if (!el) return;
+  const fmtDate = d => d ? d : '—';
+  el.innerHTML = `
+    <div class="stat"><div class="num">${fmtNum(s.total || 0)}</div><div class="lbl">Total Transactions</div></div>
+    <div class="stat"><div class="num">৳${fmtAmt(s.total_amount || 0)}</div><div class="lbl">Total Paid</div></div>
+    <div class="stat"><div class="num" style="font-size:16px">${fmtDate(s.first_txn)}</div><div class="lbl">First Transaction</div></div>
+    <div class="stat"><div class="num" style="font-size:16px">${fmtDate(s.last_txn)}</div><div class="lbl">Last Transaction</div></div>
+  `;
+}
+
+function txnPage(dir) {
+  txnOffset = Math.max(0, txnOffset + dir * TXN_LIMIT);
+  loadTransactions();
+}
+
+function txnGoto(pageNum) {
+  pageNum = Math.max(1, Math.min(pageNum, txnPages || 1));
+  txnOffset = (pageNum - 1) * TXN_LIMIT;
+  loadTransactions();
+}
+
+function txnGotoLast() { txnGoto(txnPages || 1); }
+
+function txnJumpFromInput() {
+  const v = parseInt(document.getElementById('txnJumpInput').value, 10);
+  if (!isNaN(v)) txnGoto(v);
+}
+
+function txnChangePageSize() {
+  const v = parseInt(document.getElementById('txnPageSize').value, 10);
+  if (v > 0) { TXN_LIMIT = v; txnOffset = 0; loadTransactions(); }
+}
+
+function txnPreset(kind) {
+  const today = new Date();
+  const iso = d => d.toISOString().slice(0,10);
+  let from = '', to = '';
+  if (kind === 'today')         { from = to = iso(today); }
+  else if (kind === 'yesterday') { const y = new Date(today); y.setDate(y.getDate()-1); from = to = iso(y); }
+  else if (kind === '3d')       { const f = new Date(today); f.setDate(f.getDate()-2); from = iso(f); to = iso(today); }
+  else if (kind === '7d')       { const f = new Date(today); f.setDate(f.getDate()-6); from = iso(f); to = iso(today); }
+  else if (kind === '30d')      { const f = new Date(today); f.setDate(f.getDate()-29); from = iso(f); to = iso(today); }
+  else if (kind === 'month')    { from = iso(today).slice(0,8) + '01'; to = iso(today); }
+  else if (kind === 'all')      { from = ''; to = ''; }
+  document.getElementById('txnFrom').value = from;
+  document.getElementById('txnTo').value = to;
+  document.getElementById('txnPeriod').value = '';
+  loadTransactions(true);
+}
+
+function clearTxnFilters() {
+  document.getElementById('txnPeriod').value = '';
+  document.getElementById('txnFrom').value = '';
+  document.getElementById('txnTo').value = '';
+  document.getElementById('txnMethod').value = '';
+  document.getElementById('txnEmpId').value = '';
+  txnOffset = 0;
+  loadTransactions();
+}
+
+function renderTxnTable(rows, compact = false) {
+  if (!rows.length) return '<div class="empty"><div class="icon">📋</div>No transactions found</div>';
+  return `<table>
+    <thead><tr>
+      <th>Date</th>
+      <th>Emp ID</th>
+      <th>Name</th>
+      <th>Mobile No</th>
+      <th>Amount</th>
+      <th>Method / Remarks</th>
+      <th>Period</th>
+      <th></th>
+    </tr></thead>
+    <tbody>
+    ${rows.map(r => {
+      const isExpense = (r.txn_category && r.txn_category !== 'salary') || !r.employee_id;
+      const rawName = r.employee_display_name || r.employee_name_raw || '';
+      const looksLikePhone = /^\+?\d[\d\s\-]{6,}$/.test(rawName.trim());
+      const name = isExpense
+        ? 'Office Expense'
+        : (rawName && !looksLikePhone ? esc(rawName) : '<span class="dim">(unnamed)</span>');
+      const empCode = isExpense
+        ? '<span class="dim">—</span>'
+        : esc(r.employee_display_id_phone || r.employee_code || ('#' + (r.canonical_employee_id || r.employee_id || '?')));
+      const phone = isExpense
+        ? '<span class="dim">—</span>'
+        : esc(r.employee_display_phone || r.payout_phone || '—');
+      const remarks = (r.txn_category && r.txn_category !== 'salary')
+        ? ` ${catPill(r.txn_category)}`
+        : '';
+      return `<tr>
+        <td>${fmtDate(r.txn_date)}</td>
+        <td class="mono">${empCode}</td>
+        <td>${name}</td>
+        <td class="mono">${phone}</td>
+        <td class="amount">৳${fmtAmt(r.amount)}</td>
+        <td>${methodPill(r.payout_method)}${remarks}</td>
+        <td class="mono">${r.accounting_period || '—'}</td>
+        <td><button class="btn sm secondary" onclick="openTxnDetail(${r.id})">View</button> <button class="btn sm secondary" onclick="openEditTxn(${r.id})">✏️</button> <button class="btn sm secondary" style="color:#dc3545;border-color:#dc3545" onclick="confirmDeleteTxn(${r.id})">🗑</button></td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>`;
+}
+
+async function openTxnDetail(id) {
+  openPanel('Transaction #' + id, '<div class="empty"><div class="icon">⏳</div>Loading…</div>');
+  try {
+    const d = await api('/transactions/' + id);
+    const isExpense = (d.txn_category && d.txn_category !== 'salary') || !d.employee_id;
+    const empLabel = isExpense
+      ? 'Office Expense'
+      : (d.employee_display_name || d.employee_name_raw || '—')
+        + ' (' + (d.employee_display_id_phone || d.employee_code || '#' + (d.canonical_employee_id || d.employee_id || '?')) + ')';
+    document.getElementById('panelBody').innerHTML = `
+      ${detailRow('ID', '#' + d.id)}
+      ${detailRow('Reference', d.txn_ref || '—')}
+      ${detailRow('Employee', esc(empLabel))}
+      ${!isExpense && d.employee_name_raw && d.employee_name_raw !== d.employee_display_name
+          ? detailRow('Raw (parsed)', '<span class="dim">' + esc(d.employee_name_raw) + '</span>')
+          : ''}
+      ${detailRow('Amount', '৳' + fmtAmt(d.amount))}
+      ${detailRow('Method', d.payout_method)}
+      ${detailRow('Phone', esc(d.employee_display_phone || d.payout_phone || '—'))}
+      ${detailRow('Category', d.txn_category)}
+      ${detailRow('Date', fmtDate(d.txn_date))}
+      ${detailRow('Period', d.accounting_period || '—')}
+      ${detailRow('Reversal?', d.is_reversal ? '⚠️ Yes' : 'No')}
+      ${detailRow('Created', fmtDt(d.created_at))}
+      ${d.source_message_text ? detailRow('Source', '<pre style="margin:0;font-size:11px;white-space:pre-wrap;max-height:120px">' + esc(d.source_message_text) + '</pre>') : ''}
+      <hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">
+      ${!d.is_reversal ? `<button class="btn danger sm" onclick="confirmReverse(${d.id})">↩ Reverse This Transaction</button>` : '<span class="pill muted">Already a reversal</span>'}
+    `;
+  } catch(e) {
+    document.getElementById('panelBody').innerHTML = `<div class="empty"><div class="icon">⚠️</div>${e.message}</div>`;
+  }
+}
+
+function confirmReverse(id) {
+  openModal('Reverse Transaction #' + id,
+    `<p>This will create a reversal (credit) entry for transaction <strong>#${id}</strong>. The original is NOT deleted.</p>
+    <div class="form-group" style="margin-top:14px"><label>Reason *</label>
+    <input id="revReason" type="text" placeholder="Reason…" style="width:100%"></div>`,
+    `<button class="btn secondary" onclick="closeModal()">Cancel</button>
+     <button class="btn danger" onclick="doReverse(${id})">Confirm Reversal</button>`
+  );
+}
+
+async function doReverse(id) {
+  const reason = document.getElementById('revReason').value.trim();
+  if (!reason) { showToast('Enter a reason first.', 'err'); return; }
+  try {
+    await api('/transactions/' + id + '/reverse', {
+      method: 'POST',
+      body: JSON.stringify({ reason, created_by: 'payroll_ui' })
+    });
+    showToast('✓ Reversal created successfully.', 'ok');
+    closeModal(); closePanel();
+    loadTransactions();
+  } catch(e) {
+    showToast('Error: ' + e.message, 'err');
+  }
+}
+
+// ── Employees ─────────────────────────────────────────────────────────────────
+async function loadEmployees(resetPage = false) {
+  if (resetPage) empOffset = 0;
+  const status = document.getElementById('empStatus').value;
+  const sortEl = document.getElementById('empSort');
+  const sort = sortEl ? sortEl.value : 'name_asc';
+  const q = (document.getElementById('empQuery').value || '').trim();
+  let url = `/employees?status=${status}&sort=${sort}&page_size=${EMP_LIMIT}&page=${Math.floor(empOffset / EMP_LIMIT) + 1}`;
+  if (q) url += '&q=' + encodeURIComponent(q);
+  document.getElementById('empTable').innerHTML = '<div class="empty"><div class="icon">⏳</div>Loading…</div>';
+  try {
+    const d = await api(url);
+    empTotal = d.total || 0;
+    empPages = d.pages || 1;
+    document.getElementById('empCount').textContent =
+      empTotal ? `Showing ${empOffset+1}–${Math.min(empOffset+EMP_LIMIT, empTotal)} of ${empTotal} ${status} employees` : 'No employees found';
+    if (!d.employees.length) {
+      document.getElementById('empTable').innerHTML = '<div class="empty"><div class="icon">👥</div>No employees found</div>';
+    } else {
+      document.getElementById('empTable').innerHTML = `<table>
+        <thead><tr>
+          <th>Employee ID</th><th>Name</th><th>Mobile</th>
+          <th class="right">Total Tx</th><th class="right">Total Paid</th>
+          <th>Last Paid</th><th>Status</th><th>Actions</th>
+        </tr></thead>
+        <tbody>
+        ${d.employees.map(e => `<tr>
+          <td class="mono">${esc(e.display_id || ('#'+e.id))}</td>
+          <td><strong>${esc(e.display_name)}</strong>${
+            (e.name_aliases && e.name_aliases.length > 1)
+              ? `<div style="font-size:11px;color:var(--muted)">+${e.name_aliases.length-1} alias</div>` : ''
+          }</td>
+          <td class="mono">${esc(e.mobile_number || '—')}</td>
+          <td class="right">${fmtNum(e.total_transactions)}</td>
+          <td class="right amount">৳${fmtAmt(e.total_paid)}</td>
+          <td class="mono">${e.last_payment_date || '—'}</td>
+          <td><span class="pill ${e.status==='active'?'ok':'muted'}">${esc(e.status)}</span></td>
+          <td>
+            <button class="btn sm secondary" onclick="openEmpDetail(${e.id})">View</button>
+            <button class="btn sm" onclick="openEmpEdit(${e.id})">Edit</button>
+            ${e.status==='active' ? `<button class="btn sm secondary" style="color:var(--err);border-color:var(--err)" onclick="deactivateEmployee(${e.id},${JSON.stringify(e.display_name)})">Deactivate</button>` : ''}
+          </td>
+        </tr>`).join('')}
+        </tbody></table>`;
+    }
+    document.getElementById('empPagerInfo').textContent = `Page ${d.page||1} / ${empPages}`;
+    document.getElementById('empPrev').disabled  = empOffset === 0;
+    document.getElementById('empFirst').disabled = empOffset === 0;
+    document.getElementById('empNext').disabled  = empOffset + EMP_LIMIT >= empTotal;
+    document.getElementById('empLast').disabled  = empOffset + EMP_LIMIT >= empTotal;
+    const ji = document.getElementById('empJumpInput');
+    if (ji) { ji.max = String(empPages); ji.placeholder = '1-' + empPages; }
+  } catch(e) {
+    document.getElementById('empTable').innerHTML = `<div class="empty"><div class="icon">⚠️</div>${e.message}</div>`;
+  }
+}
+function empPage(dir) { empOffset = Math.max(0, empOffset + dir * EMP_LIMIT); loadEmployees(); }
+function empGoto(p)   { p = Math.max(1, Math.min(p, empPages || 1)); empOffset = (p-1)*EMP_LIMIT; loadEmployees(); }
+function empGotoLast(){ empGoto(empPages || 1); }
+function empJumpFromInput() { const v = parseInt(document.getElementById('empJumpInput').value,10); if(!isNaN(v)) empGoto(v); }
+function empChangePageSize() { const v = parseInt(document.getElementById('empPageSize').value,10); if(v>0){ EMP_LIMIT = v; empOffset = 0; loadEmployees(); } }
+
+// ── Phase 18B: Add Employee ───────────────────────────────────────────────────
+function openAddEmployee() {
+  openPanel('➕ Add New Employee', `
+    <form id="addEmpForm" onsubmit="event.preventDefault();saveNewEmployee()">
+      <div style="display:grid;gap:10px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><label>Full Name *</label>
+            <input id="addEmpName" type="text" required placeholder="e.g. রহিম উদ্দিন" style="width:100%"></div>
+          <div><label>Mobile *</label>
+            <input id="addEmpMobile" type="text" required placeholder="e.g. 01712345678" style="width:100%"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><label>Designation</label>
+            <input id="addEmpDesig" type="text" placeholder="Staff" style="width:100%"></div>
+          <div><label>Joining Date</label>
+            <input id="addEmpJoin" type="date" style="width:100%"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><label>bKash Number</label>
+            <input id="addEmpBkash" type="text" placeholder="Optional" style="width:100%"></div>
+          <div><label>Nagad Number</label>
+            <input id="addEmpNagad" type="text" placeholder="Optional" style="width:100%"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><label>Basic Salary (৳)</label>
+            <input id="addEmpSalary" type="number" min="0" step="0.01" placeholder="0" style="width:100%"></div>
+          <div><label>NID Number</label>
+            <input id="addEmpNid" type="text" placeholder="Optional" style="width:100%"></div>
+        </div>
+        <div><label>Emergency Contact</label>
+          <input id="addEmpEmerg" type="text" placeholder="Optional" style="width:100%"></div>
+        <div><label>Address</label>
+          <textarea id="addEmpAddr" rows="2" placeholder="Optional" style="width:100%;resize:vertical"></textarea></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="submit" class="btn sm">💾 Create Employee</button>
+          <button type="button" class="btn sm secondary" onclick="closePanel()">Cancel</button>
+        </div>
+      </div>
+    </form>
+  `);
+}
+
+async function saveNewEmployee() {
+  const name    = (document.getElementById('addEmpName').value || '').trim();
+  const mobile  = (document.getElementById('addEmpMobile').value || '').trim();
+  const desig   = (document.getElementById('addEmpDesig').value || '').trim() || 'Staff';
+  const join    = (document.getElementById('addEmpJoin').value || '').trim();
+  const bkash   = (document.getElementById('addEmpBkash').value || '').trim();
+  const nagad   = (document.getElementById('addEmpNagad').value || '').trim();
+  const salary  = parseFloat(document.getElementById('addEmpSalary').value) || null;
+  const nid     = (document.getElementById('addEmpNid').value || '').trim();
+  const emerg   = (document.getElementById('addEmpEmerg').value || '').trim();
+  const addr    = (document.getElementById('addEmpAddr').value || '').trim();
+  if (!name || !mobile) { showToast('Name and Mobile are required', 'err'); return; }
+  try {
+    const r = await fetch('/api/admin/employees', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','X-Internal-Key': API_KEY},
+      body: JSON.stringify({
+        employee_name: name, employee_mobile: mobile, designation: desig,
+        joining_date: join || null, bkash_number: bkash || null,
+        nagad_number: nagad || null, basic_salary: salary,
+        nid_number: nid || null, emergency_contact: emerg || null,
+        address: addr || null,
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    showToast(`Employee '${name}' created (ID ${d.employee.employee_id})`, 'ok');
+    closePanel();
+    await loadEmployees(true);
+  } catch(e) { showToast('Create failed: ' + e.message, 'err'); }
+}
+
+// ── Phase 18B: Admin Ops Edit (wbom_employees fields) ────────────────────────
+async function openAdminEmpEdit(fpeId, phone) {
+  openPanel('⚙️ Edit Ops Data', '<div class="empty"><div class="icon">⏳</div>Loading…</div>');
+  // Resolve wbom employee by phone
+  let wbom = null;
+  if (phone) {
+    try {
+      const r = await fetch('/api/admin/employees/by-phone/' + encodeURIComponent(phone), {
+        headers: {'X-Internal-Key': API_KEY},
+      });
+      if (r.ok) { const d = await r.json(); wbom = d.employee; }
+    } catch(_) {}
+  }
+  if (!wbom) {
+    document.getElementById('panelBody').innerHTML = `
+      <div class="empty"><div class="icon">⚠️</div>No WBOM profile linked to this FPE employee (phone: ${esc(phone||'—')}).<br>
+      <small style="color:var(--muted)">The employee may have been auto-created from WhatsApp with no matching WBOM record.</small></div>
+      <div style="margin-top:14px"><button class="btn sm secondary" onclick="openEmpDetail(${fpeId})">← Back</button></div>`;
+    return;
+  }
+  document.getElementById('panelTitle').textContent = '⚙️ Edit Ops — ' + esc(wbom.employee_name);
+  document.getElementById('panelBody').innerHTML = `
+    <form id="adminEditForm" onsubmit="event.preventDefault();saveAdminEmpEdit(${wbom.employee_id},${fpeId})">
+      <div style="font-size:11px;color:var(--muted);background:var(--surface);padding:6px 10px;border-radius:6px;border:1px solid var(--border);margin-bottom:10px">
+        ⓘ Editing WBOM operational record (ID: <strong>${wbom.employee_id}</strong>, Mobile: <strong>${esc(wbom.employee_mobile)}</strong>). Mobile is immutable.
+      </div>
+      <div style="display:grid;gap:10px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><label>Full Name</label>
+            <input id="aeditName" type="text" value="${esc(wbom.employee_name||'')}" style="width:100%"></div>
+          <div><label>Designation</label>
+            <input id="aeditDesig" type="text" value="${esc(wbom.designation||'')}" style="width:100%"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><label>Joining Date</label>
+            <input id="aeditJoin" type="date" value="${wbom.joining_date||''}" style="width:100%"></div>
+          <div><label>Basic Salary (৳)</label>
+            <input id="aeditSalary" type="number" min="0" step="0.01" value="${wbom.basic_salary||''}" style="width:100%"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><label>bKash Number</label>
+            <input id="aeditBkash" type="text" value="${esc(wbom.bkash_number||'')}" style="width:100%"></div>
+          <div><label>Nagad Number</label>
+            <input id="aeditNagad" type="text" value="${esc(wbom.nagad_number||'')}" style="width:100%"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><label>NID Number</label>
+            <input id="aeditNid" type="text" value="${esc(wbom.nid_number||'')}" style="width:100%"></div>
+          <div><label>Emergency Contact</label>
+            <input id="aeditEmerg" type="text" value="${esc(wbom.emergency_contact||'')}" style="width:100%"></div>
+        </div>
+        <div><label>Address</label>
+          <textarea id="aeditAddr" rows="2" style="width:100%;resize:vertical">${esc(wbom.address||'')}</textarea></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="submit" class="btn sm">💾 Save</button>
+          <button type="button" class="btn sm secondary" onclick="closePanel()">Cancel</button>
+          <button type="button" class="btn sm secondary" onclick="openEmpDetail(${fpeId})">↩ Back</button>
+        </div>
+      </div>
+    </form>`;
+}
+
+async function saveAdminEmpEdit(wbomId, fpeId) {
+  const body = {
+    employee_name: (document.getElementById('aeditName').value||'').trim()||null,
+    designation:   (document.getElementById('aeditDesig').value||'').trim()||null,
+    joining_date:  (document.getElementById('aeditJoin').value||'').trim()||null,
+    basic_salary:  parseFloat(document.getElementById('aeditSalary').value)||null,
+    bkash_number:  (document.getElementById('aeditBkash').value||'').trim()||null,
+    nagad_number:  (document.getElementById('aeditNagad').value||'').trim()||null,
+    nid_number:    (document.getElementById('aeditNid').value||'').trim()||null,
+    emergency_contact: (document.getElementById('aeditEmerg').value||'').trim()||null,
+    address:       (document.getElementById('aeditAddr').value||'').trim()||null,
+  };
+  try {
+    const r = await fetch('/api/admin/employees/' + wbomId, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json','X-Internal-Key': API_KEY},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    showToast('Ops data updated', 'ok');
+    await loadEmployees();
+    openEmpDetail(fpeId);
+  } catch(e) { showToast('Save failed: ' + e.message, 'err'); }
+}
+
+// ── Phase 18B: Deactivate Employee ────────────────────────────────────────────
+async function deactivateEmployee(fpeId, name) {
+  if (!confirm(`Deactivate "${name}"?\n\nThis sets status=Inactive in both WBOM and FPE. No data is deleted.`)) return;
+  // Resolve wbom employee from FPE detail
+  try {
+    const fd = await api('/employees/' + fpeId);
+    const fe = fd.employee;
+    const phone = fe.employee_id_phone || fe.primary_phone;
+    if (!phone) { showToast('Cannot deactivate: no phone on FPE record', 'err'); return; }
+    // Look up WBOM id by phone
+    const wr = await fetch('/api/admin/employees/by-phone/' + encodeURIComponent(phone), {
+      headers: {'X-Internal-Key': API_KEY},
+    });
+    if (!wr.ok) { showToast('No WBOM record found for this employee', 'err'); return; }
+    const wd = await wr.json();
+    const wbomId = wd.employee.employee_id;
+    const r = await fetch('/api/admin/employees/' + wbomId + '/deactivate', {
+      method: 'PATCH',
+      headers: {'X-Internal-Key': API_KEY},
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    showToast(d.message || 'Employee deactivated', 'ok');
+    closePanel();
+    await loadEmployees(true);
+  } catch(e) { showToast('Deactivate failed: ' + e.message, 'err'); }
+}
+
+
+// ── Phase 19: Admin Transaction CRUD ─────────────────────────────────────────
+
+// Shared typeahead state for Add Payment modal
+let _txnSuggestTimer = null;
+let _txnSuggestController = null; // Phase 20: AbortController for stale request cancellation
+let _txnSuggestItems = [];
+let _txnSuggestSelected = null; // {employee_id, employee_code, full_name, primary_phone}
+
+function _clearTxnSuggest() {
+  _txnSuggestItems = [];
+  _txnSuggestSelected = null;
+  const drop = document.getElementById('addTxnSuggestDrop');
+  if (drop) drop.innerHTML = '';
+}
+
+async function _fetchTxnSuggest(q) {
+  if (!q || q.length < 2) { _clearTxnSuggest(); return; }
+  // Phase 20: cancel any in-flight request before starting a new one
+  if (_txnSuggestController) { _txnSuggestController.abort(); }
+  _txnSuggestController = new AbortController();
+  try {
+    const res = await fetch('/api/fpe/employees/suggest?q=' + encodeURIComponent(q) + '&limit=8', {
+      headers: {'X-Internal-Key': API_KEY},
+      signal: _txnSuggestController.signal,
+    });
+    const data = await res.json();
+    _txnSuggestItems = data.suggestions || data.results || data || [];
+    const drop = document.getElementById('addTxnSuggestDrop');
+    if (!drop) return;
+    if (!_txnSuggestItems.length) {
+      drop.innerHTML = '<div class="suggest-empty">No employees found</div>';
+      return;
+    }
+    drop.innerHTML = _txnSuggestItems.map((s, i) => `
+      <div class="suggest-row" data-idx="${i}" onmousedown="event.preventDefault();_selectTxnSuggest(${i})">
+        <b>${s.full_name}</b>
+        <span class="suggest-hint">${s.employee_code || ''} · ${s.display_phone || s.primary_phone || ''}</span>
+      </div>`).join('');
+  } catch(e) {
+    if (e.name === 'AbortError') return; // normal cancellation — ignore silently
+    /* other errors: silent — typeahead is a convenience */
+  }
+}
+
+function _selectTxnSuggest(idx) {
+  const s = _txnSuggestItems[idx];
+  if (!s) return;
+  _txnSuggestSelected = s;
+  const nameEl = document.getElementById('addTxnEmpName');
+  const phoneEl = document.getElementById('addTxnIdPhone');
+  if (nameEl) nameEl.value = s.full_name;
+  if (phoneEl && (s.employee_id_phone || s.primary_phone)) {
+    phoneEl.value = s.employee_id_phone || s.primary_phone;
+  }
+  const drop = document.getElementById('addTxnSuggestDrop');
+  if (drop) drop.innerHTML = '';
+}
+
+async function openAddPayment() {
+  const today = new Date().toISOString().slice(0, 10);
+  const body = `
+    <div class="suggest-wrap" style="margin-bottom:10px">
+      <label>Employee Name</label>
+      <input id="addTxnEmpName" class="input" placeholder="Type to search or enter new…" autocomplete="off"
+             oninput="_txnSuggestTimer && clearTimeout(_txnSuggestTimer); _txnSuggestTimer = setTimeout(() => _fetchTxnSuggest(this.value.trim()), 300)"
+             onblur="setTimeout(()=>{const d=document.getElementById('addTxnSuggestDrop');if(d)d.innerHTML='';},200)">
+      <div class="suggest-drop" id="addTxnSuggestDrop"></div>
+    </div>
+    <label>Employee ID Phone <small style="color:#888">(leave blank if same as payout)</small></label>
+    <input id="addTxnIdPhone" class="input" placeholder="e.g. 01712345678" style="margin-bottom:10px">
+    <label>Payout Phone</label>
+    <input id="addTxnPayoutPhone" class="input" placeholder="e.g. 01812345678" style="margin-bottom:10px">
+    <label>Amount (৳)</label>
+    <input id="addTxnAmount" class="input" type="number" min="1" step="0.01" placeholder="e.g. 5000" style="margin-bottom:10px">
+    <label>Payment Method</label>
+    <select id="addTxnMethod" class="input" style="margin-bottom:10px">
+      <option value="cash">Cash</option>
+      <option value="bkash">bKash</option>
+      <option value="nagad">Nagad</option>
+      <option value="bank">Bank</option>
+      <option value="unknown">Unknown</option>
+    </select>
+    <label>Category</label>
+    <select id="addTxnCategory" class="input" style="margin-bottom:10px">
+      <option value="salary">Salary</option>
+      <option value="advance">Advance</option>
+      <option value="bonus">Bonus</option>
+      <option value="deduction">Deduction</option>
+      <option value="other">Other</option>
+    </select>
+    <label>Transaction Date</label>
+    <input id="addTxnDate" class="input" type="date" value="${today}" style="margin-bottom:10px">
+    <label>Notes (optional)</label>
+    <textarea id="addTxnNotes" class="input" rows="2" placeholder="e.g. Advance for Eid…" style="margin-bottom:10px"></textarea>
+  `;
+  const footer = `
+    <button class="btn secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn" onclick="saveNewPayment()">💾 Save Payment</button>
+  `;
+  _clearTxnSuggest();
+  openModal('➕ Add Payment', body, footer);
+}
+
+async function saveNewPayment() {
+  const name   = document.getElementById('addTxnEmpName')?.value?.trim();
+  const idPhone = document.getElementById('addTxnIdPhone')?.value?.trim();
+  const payoutPhone = document.getElementById('addTxnPayoutPhone')?.value?.trim();
+  const amount = parseFloat(document.getElementById('addTxnAmount')?.value);
+  const method = document.getElementById('addTxnMethod')?.value;
+  const cat    = document.getElementById('addTxnCategory')?.value;
+  const date   = document.getElementById('addTxnDate')?.value;
+  const notes  = document.getElementById('addTxnNotes')?.value?.trim();
+
+  if (!name) { showToast('Employee name is required', 'err'); return; }
+  if (!amount || amount <= 0) { showToast('Valid amount is required', 'err'); return; }
+  if (!date) { showToast('Transaction date is required', 'err'); return; }
+
+  const payload = {
+    employee_name: name,
+    employee_id_phone: idPhone || null,
+    payout_phone: payoutPhone || null,
+    amount: amount,
+    payout_method: method,
+    txn_date: date,
+    txn_category: cat,
+    notes: notes || null,
+  };
+
+  try {
+    const res = await fetch('/api/admin/transactions', {
+      method: 'POST',
+      headers: {'X-Internal-Key': API_KEY, 'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    closeModal();
+    showToast('Payment saved — ' + (data.employee_code || data.employee_id), 'ok');
+    await loadTransactions(true);
+    // Phase 20: keep overview totals in sync
+    if (currentTab === 'overview') { loadOverview(); } else { loadOverviewRecent(true); }
+  } catch(e) { showToast('Save failed: ' + e.message, 'err'); }
+}
+
+async function openEditTxn(id) {
+  let row;
+  try {
+    const d = await api('/transactions/' + id);
+    row = d.transaction || d;
+  } catch(e) { showToast('Could not load transaction: ' + e.message, 'err'); return; }
+
+  const txnDate = (row.txn_date || '').slice(0, 10);
+  const body = `
+    <p style="color:#888;font-size:0.85em;margin-bottom:10px">TXN #${id} · ${row.txn_ref || ''}</p>
+    <label>Employee Name</label>
+    <input id="editTxnName" class="input" value="${(row.employee_name_raw || '').replace(/"/g,'&quot;')}" style="margin-bottom:10px">
+    <label>Payout Phone</label>
+    <input id="editTxnPayoutPhone" class="input" value="${row.payout_phone || ''}" style="margin-bottom:10px">
+    <label>Amount (৳)</label>
+    <input id="editTxnAmount" class="input" type="number" min="1" step="0.01" value="${row.amount || ''}" style="margin-bottom:10px">
+    <label>Payment Method</label>
+    <select id="editTxnMethod" class="input" style="margin-bottom:10px">
+      ${['cash','bkash','nagad','bank','unknown'].map(m =>
+        `<option value="${m}" ${m === row.payout_method ? 'selected' : ''}>${m.charAt(0).toUpperCase()+m.slice(1)}</option>`
+      ).join('')}
+    </select>
+    <label>Category</label>
+    <select id="editTxnCategory" class="input" style="margin-bottom:10px">
+      ${['salary','advance','bonus','deduction','other'].map(c =>
+        `<option value="${c}" ${c === row.txn_category ? 'selected' : ''}>${c.charAt(0).toUpperCase()+c.slice(1)}</option>`
+      ).join('')}
+    </select>
+    <label>Transaction Date</label>
+    <input id="editTxnDate" class="input" type="date" value="${txnDate}" style="margin-bottom:10px">
+    <label>Notes</label>
+    <textarea id="editTxnNotes" class="input" rows="2" style="margin-bottom:10px">${row.source_message_text || ''}</textarea>
+  `;
+  const footer = `
+    <button class="btn secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn" onclick="saveEditTxn(${id})">💾 Save Changes</button>
+  `;
+  openModal('✏️ Edit Transaction #' + id, body, footer);
+}
+
+async function saveEditTxn(id) {
+  const name   = document.getElementById('editTxnName')?.value?.trim();
+  const payoutPhone = document.getElementById('editTxnPayoutPhone')?.value?.trim();
+  const amount = parseFloat(document.getElementById('editTxnAmount')?.value);
+  const method = document.getElementById('editTxnMethod')?.value;
+  const cat    = document.getElementById('editTxnCategory')?.value;
+  const date   = document.getElementById('editTxnDate')?.value;
+  const notes  = document.getElementById('editTxnNotes')?.value?.trim();
+
+  const payload = {};
+  if (name) payload.employee_name_raw = name;
+  if (payoutPhone) payload.payout_phone = payoutPhone;
+  if (amount > 0) payload.amount = amount;
+  if (method) payload.payout_method = method;
+  if (cat) payload.txn_category = cat;
+  if (date) payload.txn_date = date;
+  if (notes !== undefined) payload.notes = notes || null;
+
+  try {
+    const res = await fetch('/api/admin/transactions/' + id, {
+      method: 'PUT',
+      headers: {'X-Internal-Key': API_KEY, 'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    closeModal();
+    showToast('Transaction #' + id + ' updated', 'ok');
+    await loadTransactions(true);
+    // Phase 20: keep overview totals in sync
+    if (currentTab === 'overview') { loadOverview(); } else { loadOverviewRecent(true); }
+  } catch(e) { showToast('Edit failed: ' + e.message, 'err'); }
+}
+
+async function confirmDeleteTxn(id) {
+  const confirmed = confirm(
+    'Soft-delete transaction #' + id + '?\n\n' +
+    'The record will be hidden from all reports and the ledger will be reversed.\n' +
+    'This action is logged and cannot be undone from the UI.'
+  );
+  if (!confirmed) return;
+
+  try {
+    const res = await fetch('/api/admin/transactions/' + id + '?deleted_by=admin_manual', {
+      method: 'DELETE',
+      headers: {'X-Internal-Key': API_KEY},
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    showToast('Transaction #' + id + ' deleted', 'ok');
+    await loadTransactions(true);
+    // Phase 20: keep overview totals in sync
+    if (currentTab === 'overview') { loadOverview(); } else { loadOverviewRecent(true); }
+  } catch(e) { showToast('Delete failed: ' + e.message, 'err'); }
+}
+
+// ── End Phase 19 ──────────────────────────────────────────────────────────────
+
+async function openEmpDetail(id) {
+  openPanel('Employee #' + id, '<div class="empty"><div class="icon">⏳</div>Loading…</div>');
+  try {
+    const d = await api('/employees/' + id);
+    const e = d.employee;
+    const ledger = d.ledger_summary || [];
+    const aliases = d.aliases || [];
+    const t = d.totals || {};
+
+    let ledgerHtml = '<div class="empty" style="padding:12px"><div class="icon">📒</div>No ledger entries</div>';
+    if (ledger.length) {
+      ledgerHtml = `<table style="margin-top:8px">
+        <thead><tr><th>Period</th><th class="right">Paid</th><th class="right">Advance</th><th class="right">Balance</th><th class="right">Txns</th></tr></thead>
+        <tbody>${ledger.map(l => `<tr>
+          <td class="mono">${l.accounting_period}</td>
+          <td class="right amount">৳${fmtAmt(l.total_paid)}</td>
+          <td class="right" style="color:var(--warn)">৳${fmtAmt(l.total_advance)}</td>
+          <td class="right" style="font-weight:700;color:${l.closing_balance<0?'var(--err)':'var(--ok)'}">৳${fmtAmt(l.closing_balance)}</td>
+          <td class="right">${l.txn_count}</td>
+        </tr>`).join('')}</tbody></table>`;
+    }
+
+    document.getElementById('panelBody').innerHTML = `
+      <div class="stat-grid compact" style="margin-bottom:12px">
+        <div class="stat"><div class="num">${fmtNum(t.total_transactions||0)}</div><div class="lbl">Total Tx</div></div>
+        <div class="stat"><div class="num">৳${fmtAmt(t.total_paid||0)}</div><div class="lbl">Total Paid</div></div>
+        <div class="stat"><div class="num" style="font-size:13px">${t.first_payment_date||'—'}</div><div class="lbl">First</div></div>
+        <div class="stat"><div class="num" style="font-size:13px">${t.last_payment_date||'—'}</div><div class="lbl">Last</div></div>
+      </div>
+      ${detailRow('ID', '#' + e.id + (d.canonical_employee_id !== id ? ` <span class="pill info">canonical of #${id}</span>` : ''))}
+      ${detailRow('Display Name', `<strong>${esc(e.display_name)}</strong>`)}
+      ${detailRow('Stored Name', esc(e.full_name || '—'))}
+      ${detailRow('Employee ID Phone', e.employee_id_phone || '—')}
+      ${detailRow('Primary Phone', e.primary_phone || '—')}
+      ${detailRow('Status', `<span class="pill ${e.status==='active'?'ok':'muted'}">${e.status}</span>`)}
+      ${detailRow('Source', e.created_source || '—')}
+      ${aliases.length ? detailRow('Aliases', aliases.map(a=>`<span class="pill info">${esc(a.alias_type)}: ${esc(a.alias_value)}</span>`).join(' ')) : ''}
+      <h4 style="margin:16px 0 6px;font-size:13px;color:var(--accent2)">📒 Ledger (last 12 months)</h4>
+      ${ledgerHtml}
+      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn sm" onclick="openEmpEdit(${e.id})">✏️ Edit (FPE)</button>
+        <button class="btn sm" onclick="openAdminEmpEdit(${e.id},${JSON.stringify(e.employee_id_phone||e.primary_phone||'')})">⚙️ Edit Ops</button>
+        ${e.status==='active' ? `<button class="btn sm secondary" style="color:var(--err);border-color:var(--err)" onclick="deactivateEmployee(${e.id},${JSON.stringify(e.display_name)})">🚫 Deactivate</button>` : ''}
+        <button class="btn sm secondary" onclick="navigate('transactions');document.getElementById('txnEmpId').value=${e.id};loadTransactions(true);closePanel()">View All Transactions →</button>
+      </div>
+    `;
+  } catch(e) {
+    document.getElementById('panelBody').innerHTML = `<div class="empty"><div class="icon">⚠️</div>${e.message}</div>`;
+  }
+}
+
+async function openEmpEdit(id) {
+  openPanel('Edit Employee #' + id, '<div class="empty"><div class="icon">⏳</div>Loading…</div>');
+  try {
+    const d = await api('/employees/' + id);
+    const e = d.employee;
+    const aliases = d.aliases || [];
+    document.getElementById('panelBody').innerHTML = `
+      <form id="empEditForm" onsubmit="event.preventDefault();saveEmpEdit(${e.id})">
+        <div style="display:grid;gap:10px">
+          <div><label>Full Name</label>
+            <input id="edName" type="text" value="${esc(e.full_name || '')}" style="width:100%"></div>
+          <div><label>Employee ID Phone <span style="color:var(--muted);font-weight:400">(changing this may merge into another employee)</span></label>
+            <input id="edIdPhone" type="text" value="${esc(e.employee_id_phone || '')}" style="width:100%"></div>
+          <div><label>Primary Phone</label>
+            <input id="edPrimary" type="text" value="${esc(e.primary_phone || '')}" style="width:100%"></div>
+          <div><label>Add Alias</label>
+            <div class="row" style="gap:6px">
+              <select id="edAliasType" style="width:140px">
+                <option value="name">name</option>
+                <option value="phone">phone</option>
+                <option value="employee_id">employee_id</option>
+              </select>
+              <input id="edAliasValue" type="text" placeholder="alias value…" style="flex:1">
+            </div>
+            <div id="edAliasList" style="margin-top:6px;font-size:12px;color:var(--muted)"></div>
+          </div>
+          <div style="font-size:11px;color:var(--muted);background:var(--surface);padding:8px;border-radius:6px;border:1px solid var(--border)">
+            ⓘ Profile metadata is mutable. Accounting transactions are immutable —
+            historical txn ownership is never rewritten. If <em>Employee ID Phone</em>
+            already belongs to another employee, this row will be soft-merged
+            (canonical_employee_id) and aliases preserved.
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button type="submit" class="btn sm">💾 Save</button>
+            <button type="button" class="btn sm secondary" onclick="closePanel()">Cancel</button>
+            <button type="button" class="btn sm secondary" onclick="openEmpDetail(${e.id})">↩ Back to View</button>
+          </div>
+        </div>
+        <h4 style="margin:14px 0 4px;font-size:12px;color:var(--accent2)">Existing Aliases</h4>
+        <div>${aliases.length ? aliases.map(a=>`<span class="pill info">${esc(a.alias_type)}: ${esc(a.alias_value)}</span>`).join(' ') : '<span style="font-size:12px;color:var(--muted)">none</span>'}</div>
+      </form>
+    `;
+    window.__edPendingAliases = [];
+    document.getElementById('edAliasValue').addEventListener('keydown', ev => {
+      if (ev.key === 'Enter') { ev.preventDefault(); empEditAddAlias(); }
+    });
+  } catch(e) {
+    document.getElementById('panelBody').innerHTML = `<div class="empty"><div class="icon">⚠️</div>${e.message}</div>`;
+  }
+}
+function empEditAddAlias() {
+  const t = document.getElementById('edAliasType').value;
+  const v = (document.getElementById('edAliasValue').value || '').trim();
+  if (!v) return;
+  window.__edPendingAliases = window.__edPendingAliases || [];
+  window.__edPendingAliases.push({alias_type: t, alias_value: v});
+  document.getElementById('edAliasValue').value = '';
+  document.getElementById('edAliasList').innerHTML =
+    'Pending: ' + window.__edPendingAliases.map(a=>`<span class="pill info">${esc(a.alias_type)}: ${esc(a.alias_value)}</span>`).join(' ');
+}
+async function saveEmpEdit(id) {
+  const body = {
+    full_name: document.getElementById('edName').value.trim() || null,
+    employee_id_phone: document.getElementById('edIdPhone').value.trim() || null,
+    primary_phone: document.getElementById('edPrimary').value.trim() || null,
+    aliases: window.__edPendingAliases || [],
+  };
+  try {
+    const r = await fetch('/api/fpe/employees/' + id, {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json','X-Internal-Key': API_KEY},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    if (d.merged_into) {
+      showToast(`Soft-merged into employee #${d.merged_into}`, 'ok');
+    } else {
+      showToast('Employee updated', 'ok');
+    }
+    window.__edPendingAliases = [];
+    await loadEmployees();
+    openEmpDetail(d.employee_id || id);
+  } catch(e) {
+    showToast('Save failed: ' + e.message, 'err');
+  }
+}
+
+// ── Unmatched ─────────────────────────────────────────────────────────────────
+async function loadUnmatched() {
+  const reviewed = document.getElementById('showReviewed').checked;
+  document.getElementById('unmatchedTable').innerHTML = '<div class="empty"><div class="icon">⏳</div>Loading…</div>';
+  try {
+    const d = await api('/unmatched?reviewed=' + reviewed + '&limit=100');
+    const rows = d.messages || d || [];
+    if (!rows.length) {
+      document.getElementById('unmatchedTable').innerHTML = '<div class="empty"><div class="icon">✅</div>No unmatched messages</div>';
+      return;
+    }
+    document.getElementById('unmatchedTable').innerHTML = `<table>
+      <thead><tr>
+        <th>ID</th><th>Date</th><th>Reason</th><th>Message</th><th>Reviewed</th><th></th>
+      </tr></thead>
+      <tbody>
+      ${rows.map(r => `<tr>
+        <td class="mono">#${r.id}</td>
+        <td>${fmtDate(r.message_date || r.created_at)}</td>
+        <td><span class="pill warn">${esc(r.reason_code || r.reason || '—')}</span></td>
+        <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${esc(r.raw_text || r.message_text || '—')}</td>
+        <td>${r.reviewed ? '<span class="pill ok">Done</span>' : '<span class="pill muted">Pending</span>'}</td>
+        <td>${!r.reviewed ? `<button class="btn sm" onclick="markReviewed(${r.id})">✓ Mark</button>` : ''}</td>
+      </tr>`).join('')}
+      </tbody></table>`;
+  } catch(e) {
+    document.getElementById('unmatchedTable').innerHTML = `<div class="empty"><div class="icon">⚠️</div>${e.message}</div>`;
+  }
+}
+
+async function markReviewed(id) {
+  try {
+    await api('/unmatched/' + id + '/mark-reviewed', { method: 'POST' });
+    showToast('✓ Marked as reviewed.', 'ok');
+    loadUnmatched();
+  } catch(e) {
+    showToast('Error: ' + e.message, 'err');
+  }
+}
+
+// ── Sync ─────────────────────────────────────────────────────────────────────
+async function loadSync() {
+  document.getElementById('syncStatus').innerHTML = '<div class="empty"><div class="icon">⏳</div>Loading…</div>';
+  try {
+    const [sync, health] = await Promise.all([api('/sync/status'), api('/health')]);
+    const checkpoints = sync.checkpoints || sync || [];
+
+    document.getElementById('healthDetail').innerHTML = `
+      <div class="stat-grid">
+        <div class="stat"><div class="num" style="font-size:18px;color:${health.status==='ok'?'var(--ok)':'var(--err)'}">${health.status.toUpperCase()}</div><div class="lbl">Status</div></div>
+        <div class="stat"><div class="num">${fmtNum(health.total_messages_ingested)}</div><div class="lbl">Msgs Ingested</div></div>
+        <div class="stat"><div class="num">${fmtNum(health.total_transactions)}</div><div class="lbl">Transactions</div></div>
+        <div class="stat"><div class="num" style="color:${health.pending_processing>0?'var(--warn)':'var(--ok)'}">${fmtNum(health.pending_processing)}</div><div class="lbl">Pending Queue</div></div>
+      </div>`;
+
+    if (!checkpoints.length) {
+      document.getElementById('syncStatus').innerHTML = '<div class="empty"><div class="icon">🔄</div>No sync checkpoints yet</div>';
+      return;
+    }
+    const now = Date.now();
+    document.getElementById('syncStatus').innerHTML = `<table>
+      <thead><tr><th>Source</th><th>Chat JID</th><th>Last Checked</th><th>Last Msg Ingested</th><th>Total Ingested</th><th>Status</th></tr></thead>
+      <tbody>${checkpoints.map(c => {
+        const checkedMs = c.last_checked_at ? new Date(c.last_checked_at).getTime() : 0;
+        const checkAgeSec = checkedMs ? Math.floor((now - checkedMs) / 1000) : 9999;
+        const stale = checkAgeSec > 120;
+        const checkedLabel = checkedMs ? (checkAgeSec < 60 ? `${checkAgeSec}s ago` : `${Math.floor(checkAgeSec/60)}m ago`) : 'never';
+        const statusLabel = stale ? 'stale' : 'live';
+        const statusClass = stale ? 'warn' : 'ok';
+        return `<tr>
+          <td class="mono">${esc(c.source || '—')}</td>
+          <td class="mono">${esc(c.chat_jid || c.jid || '—')}</td>
+          <td>${checkedLabel}</td>
+          <td>${fmtDt(c.last_sync_at || c.synced_at)}</td>
+          <td>${fmtNum(c.total_ingested || 0)}</td>
+          <td><span class="pill ${statusClass}">${esc(statusLabel)}</span></td>
+        </tr>`;
+      }).join('')}</tbody></table>`;
+  } catch(e) {
+    document.getElementById('syncStatus').innerHTML = `<div class="empty"><div class="icon">⚠️</div>${e.message}</div>`;
+  }
+}
+
+async function triggerSync() {
+  try {
+    const r = await api('/sync/trigger', { method: 'POST' });
+    showToast('✓ Sync triggered: ' + (r.message || 'started'), 'ok');
+    setTimeout(loadSync, 2000);
+  } catch(e) {
+    showToast('Error: ' + e.message, 'err');
+  }
+}
+
+// ── Manual Entry ──────────────────────────────────────────────────────────────
+async function submitManual() {
+  const empId = document.getElementById('mEmpId').value;
+  const amount = document.getElementById('mAmount').value;
+  const method = document.getElementById('mMethod').value;
+  const phone = document.getElementById('mPhone').value;
+  const date = document.getElementById('mDate').value;
+  const category = document.getElementById('mCategory').value;
+  const reason = document.getElementById('mReason').value.trim();
+
+  if (!empId || !amount || !date || !reason) {
+    showToast('Fill all required fields (*)', 'err'); return;
+  }
+
+  try {
+    const r = await api('/transactions/manual', {
+      method: 'POST',
+      body: JSON.stringify({
+        employee_id: parseInt(empId),
+        amount: parseFloat(amount),
+        payout_method: method,
+        payout_phone: phone || null,
+        txn_date: date,
+        txn_category: category,
+        reason,
+      })
+    });
+    showToast('✓ Transaction created: #' + (r.transaction?.id || '?'), 'ok');
+    // Clear form
+    ['mEmpId','mAmount','mPhone','mReason'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('mDate').value = new Date().toISOString().slice(0,10);
+  } catch(e) {
+    showToast('Error: ' + e.message, 'err');
+  }
+}
+
+async function submitReversal() {
+  const txnId = document.getElementById('rTxnId').value;
+  const reason = document.getElementById('rReason').value.trim();
+  if (!txnId || !reason) { showToast('Enter transaction ID and reason.', 'err'); return; }
+  confirmReverse(parseInt(txnId));
+  document.getElementById('revReason').value = reason;
+}
+
+// ── Panel Helpers ─────────────────────────────────────────────────────────────
+function openPanel(title, body) {
+  document.getElementById('panelTitle').textContent = title;
+  document.getElementById('panelBody').innerHTML = body;
+  document.getElementById('detailPanel').classList.add('open');
+  document.getElementById('panelBg').style.display = 'block';
+}
+function closePanel() {
+  document.getElementById('detailPanel').classList.remove('open');
+  document.getElementById('panelBg').style.display = 'none';
+}
+function openModal(title, body, footer) {
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalBody').innerHTML = body;
+  document.getElementById('modalFooter').innerHTML = footer;
+  document.getElementById('modalOverlay').classList.add('open');
+}
+function closeModal() { document.getElementById('modalOverlay').classList.remove('open'); }
+function detailRow(lbl, val) {
+  return `<div class="detail-row"><span class="lbl">${lbl}</span><span class="val">${val}</span></div>`;
+}
+
+// ── Employee Search Tab (READ-ONLY type-ahead) ───────────────────────────────
+let suggestItems = [];
+let suggestActive = -1;
+
+function initEmpSearchTab() {
+  const inp = document.getElementById('empSearchInput');
+  if (!inp._wired) {
+    inp.addEventListener('input', onEmpSearchInput);
+    inp.addEventListener('keydown', onSuggestKey);
+    inp.addEventListener('blur',  () => setTimeout(closeSuggest, 180));
+    inp.addEventListener('focus', () => { if (inp.value.trim().length >= 1) onEmpSearchInput(); });
+    document.getElementById('empSearchFrom').addEventListener('change', onEmpHistoryFiltersChange);
+    document.getElementById('empSearchTo').addEventListener('change', onEmpHistoryFiltersChange);
+    inp._wired = true;
+  }
+  inp.focus();
+}
+
+function onEmpSearchInput() {
+  clearTimeout(empSearchTimer);
+  empSearchTimer = setTimeout(runSuggest, 250);
+}
+
+function closeSuggest() {
+  const d = document.getElementById('suggestDrop');
+  if (d) { d.classList.remove('open'); d.innerHTML = ''; }
+  suggestItems = []; suggestActive = -1;
+}
+
+function onSuggestKey(ev) {
+  const drop = document.getElementById('suggestDrop');
+  const open = drop && drop.classList.contains('open');
+  if (ev.key === 'Escape') { closeSuggest(); return; }
+  if (!open || !suggestItems.length) {
+    if (ev.key === 'Enter') { ev.preventDefault(); runSuggest(); }
+    return;
+  }
+  if (ev.key === 'ArrowDown') { ev.preventDefault(); suggestActive = (suggestActive + 1) % suggestItems.length; renderActive(); }
+  else if (ev.key === 'ArrowUp') { ev.preventDefault(); suggestActive = (suggestActive - 1 + suggestItems.length) % suggestItems.length; renderActive(); }
+  else if (ev.key === 'Enter')  { ev.preventDefault(); const i = suggestActive >= 0 ? suggestActive : 0; pickSuggest(suggestItems[i].employee_id); }
+}
+
+function renderActive() {
+  const drop = document.getElementById('suggestDrop');
+  if (!drop) return;
+  drop.querySelectorAll('.suggest-row').forEach((el, i) => el.classList.toggle('active', i === suggestActive));
+  const row = drop.querySelector('.suggest-row.active');
+  if (row && row.scrollIntoView) row.scrollIntoView({block:'nearest'});
+}
+
+async function runSuggest() {
+  const q = document.getElementById('empSearchInput').value.trim();
+  const drop = document.getElementById('suggestDrop');
+  if (!drop) return;
+  if (q.length < 1) { closeSuggest(); return; }
+  const seq = ++empSearchSeq;
+  drop.innerHTML = '<div class="suggest-empty">⏳ Searching…</div>';
+  drop.classList.add('open');
+  try {
+    const data = await api('/employees/suggest?q=' + encodeURIComponent(q) + '&limit=10');
+    if (seq !== empSearchSeq) return;
+    suggestItems = data.results || [];
+    suggestActive = suggestItems.length ? 0 : -1;
+    if (!suggestItems.length) {
+      drop.innerHTML = '<div class="suggest-empty">🔎 No matches. Try a shorter prefix or partial spelling.</div>';
+      renderEmpSearchResults([]);
+      return;
+    }
+    drop.innerHTML = '<div class="suggest-hint">' + suggestItems.length + ' suggestion' + (suggestItems.length>1?'s':'') + ' — ↑↓ navigate · Enter selects · Esc closes</div>' +
+      suggestItems.map((r, i) => suggestRowHtml(r, i)).join('');
+    drop.querySelectorAll('.suggest-row').forEach((el, i) => {
+      el.addEventListener('mousedown', ev => { ev.preventDefault(); pickSuggest(suggestItems[i].employee_id); });
+      el.addEventListener('mouseenter', () => { suggestActive = i; renderActive(); });
+    });
+    renderActive();
+    renderEmpSearchResults(suggestItems);
+  } catch (e) {
+    if (seq !== empSearchSeq) return;
+    drop.innerHTML = '<div class="suggest-empty">⚠️ ' + esc(e.message) + '</div>';
+  }
+}
+
+function suggestRowHtml(r, i) {
+  const aliasBadge = r.alias_count > 0
+    ? `<span class="alias-tag">${r.alias_count} alias${r.alias_count>1?'es':''}</span>` : '';
+  const sim = (typeof r.similarity === 'number') ? `<span class="sim">${r.similarity.toFixed(2)}</span>` : '';
+  const last = r.last_activity ? r.last_activity : '—';
+  const paid = r.total_paid ? '৳' + fmtAmt(r.total_paid) : '—';
+  const aliasLine = (r.aliases && r.aliases.length)
+    ? `<div class="meta" style="color:#0369a1">aka ${esc(r.aliases.slice(0,3).join(' · '))}</div>` : '';
+  return `<div class="suggest-row" role="option" data-i="${i}">
+    <div>
+      <div class="name">${esc(r.display_name)}${aliasBadge}${sim}</div>
+      <div class="meta">ID: ${esc(r.employee_id_phone || '#'+r.employee_id)} · ${esc(r.mobile_number || '—')}</div>
+      ${aliasLine}
+    </div>
+    <div class="right">
+      <span class="amt">${paid}</span>
+      <span>${r.total_transactions || 0} tx</span><br>
+      <span>last: ${last}</span>
+    </div>
+  </div>`;
+}
+
+function renderEmpSearchResults(rows) {
+  const out = document.getElementById('empSearchResults');
+  if (!out) return;
+  if (!rows.length) {
+    out.innerHTML = '<div class="empty"><div class="icon">🔎</div>No employees match — type more to refine.</div>';
+    return;
+  }
+  out.innerHTML = `
+    <table>
+      <thead><tr><th>Name</th><th>Employee ID</th><th>Mobile</th><th>Aliases</th>
+        <th class="right">Total Paid</th><th>Last Activity</th><th></th></tr></thead>
+      <tbody>${rows.map(r => `
+        <tr>
+          <td><strong>${esc(r.display_name)}</strong></td>
+          <td class="mono">${esc(r.employee_id_phone || '#'+r.employee_id)}</td>
+          <td class="mono">${esc(r.mobile_number || '—')}</td>
+          <td>${r.alias_count ? `<span class="pill info">${r.alias_count}</span> ${esc((r.aliases||[]).slice(0,2).join(', '))}` : '<span class="dim">—</span>'}</td>
+          <td class="right amount">৳${fmtAmt(r.total_paid||0)}</td>
+          <td class="mono">${r.last_activity || '—'}</td>
+          <td>
+            <button class="btn sm secondary" onclick="openEmpDetail(${r.employee_id})">View</button>
+            <button class="btn sm" onclick="selectEmp(${r.employee_id})">History</button>
+          </td>
+        </tr>`).join('')}
+      </tbody></table>`;
+}
+
+function pickSuggest(empId) {
+  if (!empId) return;
+  closeSuggest();
+  selectEmp(empId);
+  openEmpDetail(empId);
+}
+
+// Backwards-compat wrapper kept in case anything still calls runEmpSearch().
+async function runEmpSearch() { return runSuggest(); }
+
+function selectEmp(empId) {
+  empSelected = empId;
+  empHistoryPageNum = 1;
+  document.getElementById('empHistoryCard').style.display = '';
+  loadEmpHistory();
+}
+
+function onEmpHistoryFiltersChange() {
+  if (empSelected == null) return;
+  empHistoryPageNum = 1;
+  loadEmpHistory();
+}
+
+function clearEmpSearchFilters() {
+  document.getElementById('empSearchFrom').value = '';
+  document.getElementById('empSearchTo').value = '';
+  if (empSelected != null) { empHistoryPageNum = 1; loadEmpHistory(); }
+}
+
+function empPreset(kind) {
+  const today = new Date();
+  const fmt = d => d.toISOString().slice(0,10);
+  let from = '', to = fmt(today);
+  if (kind === '7d')   { const d = new Date(today); d.setDate(d.getDate() - 6);  from = fmt(d); }
+  else if (kind === '30d') { const d = new Date(today); d.setDate(d.getDate() - 29); from = fmt(d); }
+  else if (kind === 'month') { const d = new Date(today.getFullYear(), today.getMonth(), 1); from = fmt(d); }
+  else if (kind === 'all')   { from = ''; to = ''; }
+  document.getElementById('empSearchFrom').value = from;
+  document.getElementById('empSearchTo').value = to;
+  if (empSelected != null) { empHistoryPageNum = 1; loadEmpHistory(); }
+}
+
+function empHistoryPage(delta) {
+  empHistoryPageNum += delta;
+  if (empHistoryPageNum < 1) empHistoryPageNum = 1;
+  loadEmpHistory();
+}
+
+async function loadEmpHistory() {
+  if (empSelected == null) return;
+  const from = document.getElementById('empSearchFrom').value;
+  const to   = document.getElementById('empSearchTo').value;
+  const params = new URLSearchParams({ page: empHistoryPageNum, page_size: EMP_HISTORY_PAGE_SIZE });
+  if (from) params.set('from', from);
+  if (to)   params.set('to', to);
+  const tbl = document.getElementById('empHistoryTable');
+  tbl.innerHTML = '<div class="empty"><div class="icon">⏳</div>Loading…</div>';
+  try {
+    const data = await api('/employees/' + empSelected + '/transactions?' + params.toString());
+    renderEmpHistory(data);
+  } catch (e) {
+    tbl.innerHTML = `<div class="empty err"><div class="icon">⚠️</div>${esc(e.message)}</div>`;
+  }
+}
+
+function renderEmpHistory(data) {
+  const e = data.employee || {};
+  const s = data.summary || {};
+  const p = data.pagination || {};
+  const f = data.filters || {};
+  document.getElementById('empHistorySummary').innerHTML = `
+    <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+      <div>
+        <h2 style="margin:0">${esc(e.full_name || '—')} <span style="color:var(--muted);font-weight:400;font-size:14px">${esc(e.employee_code || '')}</span></h2>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">
+          ID phone: ${esc(e.employee_id_phone || '—')} · Primary: ${esc(e.primary_phone || '—')} · Status: ${esc(e.status || '—')}
+        </div>
+      </div>
+      <button class="btn sm secondary" onclick="document.getElementById('empHistoryCard').style.display='none';empSelected=null">Close</button>
+    </div>
+    <div class="row" style="gap:12px;margin-bottom:12px">
+      <div class="stat"><div class="lbl">Total Txns</div><div class="num">${fmtNum(s.total_transactions)}</div></div>
+      <div class="stat"><div class="lbl">Total Paid</div><div class="num">৳ ${fmtNum(s.total_paid)}</div></div>
+      <div class="stat"><div class="lbl">First</div><div class="num" style="font-size:14px">${fmtDate(s.first_transaction)}</div></div>
+      <div class="stat"><div class="lbl">Last</div><div class="num" style="font-size:14px">${fmtDate(s.last_transaction)}</div></div>
+    </div>`;
+  document.getElementById('empHistoryFilters').textContent =
+    'Filters: ' + (f.from || 'beginning') + ' → ' + (f.to || 'today');
+
+  const rows = data.transactions || [];
+  if (!rows.length) {
+    document.getElementById('empHistoryTable').innerHTML =
+      '<div class="empty"><div class="icon">📭</div>No transactions in this range.</div>';
+  } else {
+    document.getElementById('empHistoryTable').innerHTML = `
+      <table class="tbl">
+        <thead><tr>
+          <th>Date</th><th>Employee ID</th><th>Name</th><th>Mobile Number</th>
+          <th>Method</th><th>Amount</th><th>Remarks</th><th>Source Message</th><th>Txn Ref</th>
+        </tr></thead>
+        <tbody>${rows.map(t => `
+          <tr>
+            <td>${fmtDate(t.date)}</td>
+            <td class="mono">${esc(t.employee_id_phone || '—')}</td>
+            <td>${esc(t.employee_name || '—')}</td>
+            <td class="mono">${esc(t.payout_phone || '—')}</td>
+            <td>${methodPill(t.payment_method)}</td>
+            <td style="text-align:right">৳ ${fmtNum(t.amount)}</td>
+            <td>${esc(t.comment || '')}</td>
+            <td style="max-width:340px;white-space:pre-wrap;font-size:11px;color:var(--muted)">${esc(t.source_message || '')}</td>
+            <td style="font-family:monospace;font-size:11px">${esc(t.txn_ref)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+  }
+  document.getElementById('empHistoryPagerInfo').textContent =
+    `Page ${p.page} / ${p.total_pages || 1} · ${fmtNum(p.total_records)} records`;
+  document.getElementById('empHistoryPrev').disabled = (p.page <= 1);
+  document.getElementById('empHistoryNext').disabled = (p.page >= (p.total_pages || 1));
+}
+
+// ── Formatting Helpers ────────────────────────────────────────────────────────
+function fmtNum(n) { return (n||0).toLocaleString(); }
+function fmtAmt(n) {
+  const num = parseFloat(n) || 0;
+  return num >= 1000 ? (num/1000).toFixed(1) + 'K' : num.toLocaleString();
+}
+function fmtDate(s) {
+  if (!s) return '—';
+  const d = new Date(s);
+  return isNaN(d) ? s : d.toLocaleDateString('en-BD', {day:'2-digit',month:'short',year:'numeric'});
+}
+function fmtDt(s) {
+  if (!s) return '—';
+  const d = new Date(s);
+  return isNaN(d) ? s : d.toLocaleString('en-BD', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+}
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function methodPill(m) {
+  const map = {bkash:'purple',nagad:'orange',cash:'info',bank:'muted'};
+  return `<span class="pill ${map[m]||'muted'}">${esc(m||'—')}</span>`;
+}
+function catPill(c) {
+  const map = {salary:'ok',advance:'warn',bonus:'info',deduction:'err',other:'muted'};
+  return `<span class="pill ${map[c]||'muted'}">${esc(c||'—')}</span>`;
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+(function boot() {
+  const saved = localStorage.getItem('fpe_api_key');
+  if (saved) {
+    API_KEY = saved;
+    // Quick verify
+    fetch('/api/fpe/health', { headers: { 'X-Internal-Key': saved } })
+      .then(r => {
+        if (r.ok) {
+          document.getElementById('loginOverlay').style.display = 'none';
+          document.getElementById('app').style.display = 'flex';
+          initApp();
+        }
+        // If expired/invalid, show login (loginOverlay stays visible)
+      })
+      .catch(() => {}); // network err - still show login
+  }
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REVIEW QUEUE MODULE (/payroll/review)
+// ───────────────────────────────────────────────────────────────────────────
+// Operational dashboard for "Pending Accounting Candidates" — money that the
+// parser detected but has NOT yet been promoted to the immutable ledger.
+// Strict rules enforced:
+//   * Approve calls POST /admin/needs-review/{id}/promote which routes through
+//     accounting.create_transaction() — never edits ledger rows directly.
+//   * Reject/Duplicate calls /dismiss — preserves the row, just flips status.
+//   * Requeue Parser calls /admin/dlq/{wa_id}/requeue.
+//   * Every action is audit-logged on the server in fpe_review_audit_logs.
+// ═══════════════════════════════════════════════════════════════════════════
+let rvOffset = 0, rvTotal = 0, rvLimit = 50, rvItems = [];
+let rvSelected = new Set();
+let rvReviewerCache = localStorage.getItem('fpe_reviewer') || '';
+
+function confidenceBand(c){
+  if (c == null) return {label:'—', cls:'muted'};
+  const v = Number(c);
+  if (v >= 0.8) return {label:`High ${v.toFixed(2)}`, cls:'ok'};
+  if (v >= 0.5) return {label:`Med ${v.toFixed(2)}`,  cls:'warn'};
+  return {label:`Low ${v.toFixed(2)}`,                cls:'err'};
+}
+function rvFmtAmt(a){ if (a == null || a === '') return '—'; return '৳' + fmtNum(Number(a)); }
+
+async function loadReview(reset){
+  if (reset) { rvOffset = 0; rvSelected.clear(); rvUpdateSelCount(); }
+  rvLimit = parseInt(document.getElementById('rvPageSize').value, 10) || 50;
+  document.getElementById('rvTable').innerHTML = '<div class="empty"><div class="icon">⏳</div>Loading…</div>';
+  try {
+    // Summary cards + reconcile banner in parallel
+    Promise.all([
+      api('/admin/review-summary').catch(()=>null),
+      api('/admin/reconcile').catch(()=>null),
+    ]).then(([s, r]) => {
+      if (s) {
+        document.getElementById('reviewSummary').innerHTML = `
+          <div class="stat"><div class="num">${fmtNum(s.pending_review)}</div><div class="lbl">Pending Review</div></div>
+          <div class="stat"><div class="num" style="color:${s.low_confidence>0?'var(--err)':''}">${fmtNum(s.low_confidence)}</div><div class="lbl">Low Confidence</div></div>
+          <div class="stat"><div class="num">${rvFmtAmt(s.pending_amount)}</div><div class="lbl">Pending Amount</div></div>
+          <div class="stat"><div class="num">${fmtNum(s.rejected)}</div><div class="lbl">Rejected</div></div>
+          <div class="stat"><div class="num">${fmtNum(s.promoted_today)}</div><div class="lbl">Promoted Today</div></div>
+          <div class="stat"><div class="num" style="color:${s.dlq>0?'var(--err)':''}">${fmtNum(s.dlq)}</div><div class="lbl">DLQ</div></div>`;
+      }
+      if (r) {
+        const ok = !!r.ok;
+        const delta = r.delta ?? '0';
+        const cls = ok ? 'ok' : 'warn';
+        document.getElementById('reconBanner').innerHTML = `
+          <div class="card" style="border-left:4px solid ${ok?'var(--ok)':'var(--warn)'}">
+            <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+              <span class="pill ${cls}">${ok ? 'Reconciled' : 'Delta Detected'}</span>
+              <span style="font-size:13px"><b>Ledger delta:</b> ৳${fmtNum(Number(delta))}</span>
+              <span style="font-size:12px;color:var(--muted)">
+                parser=${rvFmtAmt(r.parser_sum)} ·
+                ledger=${rvFmtAmt(r.ledger_sum)} ·
+                unmatched=${rvFmtAmt(r.unmatched_sum)}
+              </span>
+              <span style="font-size:11px;color:var(--muted)">${esc(r.invariant || '')}</span>
+            </div>
+          </div>`;
+      }
+    });
+
+    const status = document.getElementById('rvStatus').value;
+    const reason = document.getElementById('rvReason').value;
+    const qs = new URLSearchParams({status, limit: rvLimit, offset: rvOffset});
+    if (reason) qs.set('reason', reason);
+    const d = await api('/admin/needs-review?' + qs.toString());
+    let items = d.items || [];
+
+    // Client-side confidence band filter (server filter is by reason)
+    const band = document.getElementById('rvConfBand').value;
+    if (band) {
+      items = items.filter(it => {
+        const c = it.parser_confidence;
+        if (c == null) return band === 'low';
+        const v = Number(c);
+        if (band === 'low')  return v < 0.5;
+        if (band === 'med')  return v >= 0.5 && v < 0.8;
+        if (band === 'high') return v >= 0.8;
+        return true;
+      });
+    }
+    rvItems = items;
+    rvTotal = d.total || items.length;
+    rvRenderTable();
+    rvRenderPager();
+  } catch (e) {
+    document.getElementById('rvTable').innerHTML = `<div class="empty"><div class="icon">⚠️</div>${esc(e.message)}</div>`;
+  }
+}
+
+function rvRenderTable(){
+  if (!rvItems.length) {
+    document.getElementById('rvTable').innerHTML = '<div class="empty"><div class="icon">✅</div>No items.</div>';
+    document.getElementById('rvCount').textContent = '';
+    return;
+  }
+  document.getElementById('rvCount').textContent = `${rvTotal} item${rvTotal===1?'':'s'}`;
+  document.getElementById('rvTable').innerHTML = `<table>
+    <thead><tr>
+      <th style="width:28px"><input type="checkbox" id="rvSelAll" onclick="rvToggleAll(this.checked)"></th>
+      <th>ID</th><th>WhatsApp Time</th><th>Sender</th>
+      <th>Parsed Name</th><th>Payout Phone</th>
+      <th class="right">Amount</th><th>Method</th>
+      <th>Confidence</th><th>Status</th><th>Actions</th>
+    </tr></thead><tbody>
+    ${rvItems.map(r => {
+      const c = confidenceBand(r.parser_confidence);
+      const stCls = r.review_status === 'pending' ? 'warn' :
+                    r.review_status === 'promoted' ? 'ok' : 'muted';
+      const sel = rvSelected.has(r.id) ? 'checked' : '';
+      return `<tr>
+        <td><input type="checkbox" ${sel} onclick="rvToggleRow(${r.id}, this.checked)"></td>
+        <td class="mono">#${r.id}</td>
+        <td>${fmtDate(r.timestamp_wa)}</td>
+        <td class="mono" style="font-size:11px">${esc(r.sender_phone || '—')}<br>
+            <span style="color:var(--muted)">${esc(r.source||'')}</span></td>
+        <td>${esc(r.detected_employee_name || '—')}</td>
+        <td class="mono">${esc(r.detected_payout_phone || '—')}</td>
+        <td class="right amount">${rvFmtAmt(r.detected_amount)}</td>
+        <td>${esc(r.detected_payout_method || '—')}</td>
+        <td><span class="pill ${c.cls}">${c.label}</span></td>
+        <td><span class="pill ${stCls}">${esc(r.review_status)}</span></td>
+        <td>
+          <button class="btn sm" onclick="rvOpenDetail(${r.id})">View</button>
+          ${r.review_status === 'pending' ? `
+            <button class="btn sm" onclick="rvOpenApprove(${r.id})">Approve</button>
+            <button class="btn sm danger" onclick="rvOpenReject(${r.id})">Reject</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>`;
+}
+
+function rvRenderPager(){
+  const last = Math.max(1, Math.ceil(rvTotal / rvLimit));
+  const cur  = Math.floor(rvOffset / rvLimit) + 1;
+  document.getElementById('rvPagerInfo').textContent = `Page ${cur} of ${last} (${rvTotal} items)`;
+  document.getElementById('rvPrev').disabled = rvOffset <= 0;
+  document.getElementById('rvNext').disabled = rvOffset + rvLimit >= rvTotal;
+}
+function rvPage(dir){ rvOffset = Math.max(0, rvOffset + dir * rvLimit); loadReview(false); }
+function rvGoto(p){ rvOffset = Math.max(0, (p-1) * rvLimit); loadReview(false); }
+function rvJumpFromInput(){ const v = parseInt(document.getElementById('rvJumpInput').value,10); if (v>=1) rvGoto(v); }
+
+function rvToggleRow(id, on){
+  if (on) rvSelected.add(id); else rvSelected.delete(id);
+  rvUpdateSelCount();
+}
+function rvToggleAll(on){
+  rvSelected.clear();
+  if (on) rvItems.forEach(it => { if (it.review_status === 'pending') rvSelected.add(it.id); });
+  rvRenderTable();
+  rvUpdateSelCount();
+}
+function rvUpdateSelCount(){
+  document.getElementById('rvSelCount').textContent = `${rvSelected.size} selected`;
+}
+
+// ── Detail panel: raw message + parser output + suggestions ───────────────
+async function rvOpenDetail(id){
+  const it = rvItems.find(x => x.id === id);
+  if (!it) return;
+  document.getElementById('panelTitle').textContent = `Review #${id}`;
+  // Pull recent audit entries for this review_item
+  let auditHtml = '';
+  try {
+    const a = await api(`/admin/audit?review_item_id=${id}&limit=20`);
+    const rows = a.items || [];
+    if (rows.length) {
+      auditHtml = `<div style="margin-top:14px"><h3 style="font-size:13px;color:var(--accent2);margin-bottom:8px">Audit trail</h3>
+        ${rows.map(x => `<div style="font-size:11px;border-left:3px solid var(--border);padding:4px 8px;margin-bottom:4px">
+          <span class="pill info">${esc(x.action)}</span>
+          <b>${esc(x.actor)}</b>
+          <span style="color:var(--muted)">${fmtDate(x.created_at)}</span>
+          ${x.reason ? `<div style="color:var(--text2);margin-top:2px">${esc(x.reason)}</div>` : ''}
+        </div>`).join('')}</div>`;
+    }
+  } catch(_) {}
+  document.getElementById('panelBody').innerHTML = `
+    <div class="detail-row"><span class="lbl">WhatsApp time</span><span class="val">${fmtDate(it.timestamp_wa)}</span></div>
+    <div class="detail-row"><span class="lbl">Bridge / Source #</span><span class="val">${esc(it.source||'—')} · ${esc(it.source_number||'—')}</span></div>
+    <div class="detail-row"><span class="lbl">Chat JID</span><span class="val mono">${esc(it.chat_jid||'—')}</span></div>
+    <div class="detail-row"><span class="lbl">Sender</span><span class="val mono">${esc(it.sender_phone||'—')}</span></div>
+    <div class="detail-row"><span class="lbl">Reason</span><span class="val"><span class="pill warn">${esc(it.reason||'—')}</span></span></div>
+    <div class="detail-row"><span class="lbl">Confidence</span><span class="val">${confidenceBand(it.parser_confidence).label}</span></div>
+    <div class="detail-row"><span class="lbl">Detected amount</span><span class="val"><b>${rvFmtAmt(it.detected_amount)}</b></span></div>
+    <div class="detail-row"><span class="lbl">Detected name</span><span class="val">${esc(it.detected_employee_name||'—')}</span></div>
+    <div class="detail-row"><span class="lbl">Detected phone</span><span class="val mono">${esc(it.detected_payout_phone||'—')}</span></div>
+    <div class="detail-row"><span class="lbl">Method</span><span class="val">${esc(it.detected_payout_method||'—')}</span></div>
+    <div class="detail-row"><span class="lbl">Txn date</span><span class="val">${esc(it.detected_txn_date||'—')}</span></div>
+    <div class="detail-row"><span class="lbl">Retries</span><span class="val">${it.retry_count||0}</span></div>
+    <div class="detail-row"><span class="lbl">Review status</span><span class="val"><span class="pill info">${esc(it.review_status||'')}</span></span></div>
+    <div class="detail-row"><span class="lbl">WA Msg PK</span><span class="val mono">${it.fpe_wa_message_id||'—'}</span></div>
+    <div style="margin-top:14px">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Raw WhatsApp message</div>
+      <pre style="background:var(--surface);padding:10px;border-radius:8px;font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:240px;overflow:auto">${esc(it.raw_content||'')}</pre>
+    </div>
+    ${it.review_status === 'pending' ? `
+      <div style="margin-top:14px;display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn sm" onclick="rvOpenApprove(${id})">Approve Transaction</button>
+        <button class="btn sm danger" onclick="rvOpenReject(${id})">Reject</button>
+        <button class="btn sm secondary" onclick="rvRequeueParser(${it.fpe_wa_message_id})">Requeue Parser</button>
+      </div>` : ''}
+    ${auditHtml}`;
+  document.getElementById('detailPanel').classList.add('open');
+  document.getElementById('panelBg').style.display = 'block';
+}
+
+// ── Approve modal: search employee + confirm ──────────────────────────────
+function rvOpenApprove(id){
+  const it = rvItems.find(x => x.id === id);
+  if (!it) return;
+  document.getElementById('modalTitle').textContent = `Approve #${id} — Promote to ledger`;
+  document.getElementById('modalBody').innerHTML = `
+    <p style="font-size:12px;color:var(--muted);margin-bottom:10px">
+      This will call <code>accounting.create_transaction()</code> and append a new immutable
+      ledger entry. The review row is preserved with status <b>promoted</b>.
+    </p>
+    <div class="form-group">
+      <label>Detected amount</label>
+      <div style="font-size:18px;font-weight:700;color:var(--accent2)">${rvFmtAmt(it.detected_amount)}</div>
+    </div>
+    <div class="form-group">
+      <label>Resolve canonical employee *</label>
+      <div class="suggest-wrap">
+        <input id="rvApprEmpInput" type="text" autocomplete="off" placeholder="Type name / phone / id…" style="width:100%"
+               oninput="rvApprSuggest(this.value)">
+        <div id="rvApprDrop" class="suggest-drop"></div>
+      </div>
+      <input id="rvApprEmpId" type="hidden">
+      <div id="rvApprEmpPicked" style="font-size:12px;color:var(--muted);margin-top:4px"></div>
+    </div>
+    <div class="form-group">
+      <label>Payout method</label>
+      <select id="rvApprMethod" style="width:100%">
+        <option value="">(use detected: ${esc(it.detected_payout_method || 'unknown')})</option>
+        <option value="bkash">bKash</option>
+        <option value="nagad">Nagad</option>
+        <option value="cash">Cash</option>
+        <option value="bank">Bank</option>
+        <option value="unknown">Unknown</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Category</label>
+      <select id="rvApprCategory" style="width:100%">
+        <option value="salary">Salary</option>
+        <option value="advance">Advance</option>
+        <option value="bonus">Bonus</option>
+        <option value="deduction">Deduction</option>
+        <option value="other">Other</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Txn date override</label>
+      <input id="rvApprDate" type="date" value="${esc(it.detected_txn_date||'')}" style="width:100%">
+    </div>
+    <div class="form-group">
+      <label>Amount override (leave blank to use detected)</label>
+      <input id="rvApprAmtOverride" type="number" step="0.01" placeholder="optional" style="width:100%">
+    </div>
+    <div class="form-group">
+      <label>Reviewer *</label>
+      <input id="rvApprReviewer" type="text" placeholder="your name" value="${esc(rvReviewerCache)}" style="width:100%">
+    </div>
+    <div class="form-group">
+      <label>Note</label>
+      <input id="rvApprNote" type="text" placeholder="audit note (recommended for overrides)" style="width:100%">
+    </div>`;
+  document.getElementById('modalFooter').innerHTML = `
+    <button class="btn secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn" onclick="rvSubmitApprove(${id})">Promote to Ledger</button>`;
+  document.getElementById('modalOverlay').classList.add('open');
+}
+
+let _rvApprSuggestTimer = null;
+function rvApprSuggest(q){
+  clearTimeout(_rvApprSuggestTimer);
+  const drop = document.getElementById('rvApprDrop');
+  if (!q || q.length < 1) { drop.classList.remove('open'); return; }
+  _rvApprSuggestTimer = setTimeout(async () => {
+    try {
+      const d = await api('/employees/suggest?q=' + encodeURIComponent(q) + '&limit=8');
+      const rows = d.results || [];
+      if (!rows.length) {
+        drop.innerHTML = '<div class="suggest-empty">No matches</div>';
+      } else {
+        drop.innerHTML = rows.map(r => `<div class="suggest-row" onclick="rvApprPick(${r.id||r.employee_id},'${esc((r.name||'').replace(/'/g,"\\'"))}', '${esc(r.primary_phone||r.phone||'')}')">
+          <div><div class="name">${esc(r.name||'(unnamed)')}</div>
+            <div class="meta">#${r.id||r.employee_id} ${esc(r.primary_phone||r.phone||'')}</div></div>
+          <div class="right"><span class="sim">${r.match_type||r.similarity||''}</span></div>
+        </div>`).join('');
+      }
+      drop.classList.add('open');
+    } catch(e){ drop.innerHTML = '<div class="suggest-empty">Error</div>'; }
+  }, 180);
+}
+function rvApprPick(id, name, phone){
+  document.getElementById('rvApprEmpId').value = id;
+  document.getElementById('rvApprEmpInput').value = name;
+  document.getElementById('rvApprEmpPicked').innerHTML =
+    `Selected: <b>#${id} ${esc(name)}</b> ${phone ? '· '+esc(phone) : ''}`;
+  document.getElementById('rvApprDrop').classList.remove('open');
+}
+
+async function rvSubmitApprove(id){
+  const empId = parseInt(document.getElementById('rvApprEmpId').value, 10);
+  if (!empId) { showToast('Select a canonical employee first', 'err'); return; }
+  const reviewer = (document.getElementById('rvApprReviewer').value || '').trim();
+  if (!reviewer) { showToast('Reviewer name is required', 'err'); return; }
+  localStorage.setItem('fpe_reviewer', reviewer);
+  rvReviewerCache = reviewer;
+  const qs = new URLSearchParams({
+    employee_id: empId, reviewer,
+    txn_category: document.getElementById('rvApprCategory').value,
+  });
+  const m = document.getElementById('rvApprMethod').value;
+  if (m) qs.set('payout_method', m);
+  const d = document.getElementById('rvApprDate').value;
+  if (d) qs.set('txn_date_override', d);
+  const ov = document.getElementById('rvApprAmtOverride').value;
+  if (ov) qs.set('amount_override', ov);
+  const note = document.getElementById('rvApprNote').value;
+  if (note) qs.set('note', note);
+  try {
+    const r = await api(`/admin/needs-review/${id}/promote?${qs.toString()}`, {method:'POST'});
+    showToast(`✓ Promoted → txn #${r.txn_id} (${r.txn_ref ? r.txn_ref.slice(0,12) : ''})`, 'ok');
+    closeModal();
+    closePanel();
+    loadReview(true);
+  } catch(e){ showToast('Promote failed: ' + e.message, 'err'); }
+}
+
+// ── Reject modal ──────────────────────────────────────────────────────────
+function rvOpenReject(id){
+  document.getElementById('modalTitle').textContent = `Reject #${id}`;
+  document.getElementById('modalBody').innerHTML = `
+    <p style="font-size:12px;color:var(--muted);margin-bottom:10px">
+      Marks the candidate as not-payment / informational. Row is preserved and audited.
+    </p>
+    <div class="form-group">
+      <label>Reason *</label>
+      <select id="rvRejReason" style="width:100%">
+        <option value="not_payment">Not Payment</option>
+        <option value="duplicate">Duplicate</option>
+        <option value="wrong_parse">Wrong Parse</option>
+        <option value="spam">Spam</option>
+        <option value="already_accounted">Already Accounted</option>
+        <option value="manual_ignore">Manual Ignore</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Reviewer *</label>
+      <input id="rvRejReviewer" type="text" placeholder="your name" value="${esc(rvReviewerCache)}" style="width:100%">
+    </div>
+    <div class="form-group">
+      <label>Note</label>
+      <input id="rvRejNote" type="text" placeholder="optional detail" style="width:100%">
+    </div>`;
+  document.getElementById('modalFooter').innerHTML = `
+    <button class="btn secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn danger" onclick="rvSubmitReject(${id})">Reject</button>`;
+  document.getElementById('modalOverlay').classList.add('open');
+}
+
+async function rvSubmitReject(id){
+  const reasonCode = document.getElementById('rvRejReason').value;
+  const reviewer = (document.getElementById('rvRejReviewer').value||'').trim();
+  if (!reviewer) { showToast('Reviewer name required', 'err'); return; }
+  localStorage.setItem('fpe_reviewer', reviewer); rvReviewerCache = reviewer;
+  const note = document.getElementById('rvRejNote').value;
+  const asDup = reasonCode === 'duplicate';
+  const fullReason = reasonCode + (note ? ' — ' + note : '');
+  const qs = new URLSearchParams({reviewer, reason: fullReason, as_duplicate: String(asDup)});
+  try {
+    await api(`/admin/needs-review/${id}/dismiss?${qs.toString()}`, {method:'POST'});
+    showToast('Rejected', 'ok');
+    closeModal();
+    loadReview(true);
+  } catch(e){ showToast('Reject failed: ' + e.message, 'err'); }
+}
+
+async function rvRequeueParser(waId){
+  if (!waId) { showToast('No fpe_wa_message_id for this row', 'err'); return; }
+  const reviewer = prompt('Reviewer name?', rvReviewerCache); if (!reviewer) return;
+  localStorage.setItem('fpe_reviewer', reviewer); rvReviewerCache = reviewer;
+  try {
+    await api(`/admin/dlq/${waId}/requeue?reviewer=${encodeURIComponent(reviewer)}`, {method:'POST'});
+    showToast('✓ Requeued for parser', 'ok');
+    loadReview(true);
+  } catch(e){ showToast('Requeue failed: ' + e.message, 'err'); }
+}
+
+// ── Bulk actions ───────────────────────────────────────────────────────────
+async function bulkReview(kind){
+  if (rvSelected.size === 0) { showToast('Select at least one row', 'err'); return; }
+  const reviewer = prompt(`Reviewer name? (${rvSelected.size} rows, action=${kind})`, rvReviewerCache);
+  if (!reviewer) return;
+  localStorage.setItem('fpe_reviewer', reviewer); rvReviewerCache = reviewer;
+  const reason = prompt('Reason / note?', kind) || kind;
+  let ok = 0, fail = 0;
+  for (const id of Array.from(rvSelected)) {
+    try {
+      if (kind === 'dismiss' || kind === 'duplicate') {
+        const qs = new URLSearchParams({reviewer, reason, as_duplicate: String(kind==='duplicate')});
+        await api(`/admin/needs-review/${id}/dismiss?${qs.toString()}`, {method:'POST'});
+      } else if (kind === 'requeue') {
+        const it = rvItems.find(x => x.id === id);
+        if (!it || !it.fpe_wa_message_id) { fail++; continue; }
+        await api(`/admin/dlq/${it.fpe_wa_message_id}/requeue?reviewer=${encodeURIComponent(reviewer)}`, {method:'POST'});
+      }
+      ok++;
+    } catch(_) { fail++; }
+  }
+  showToast(`Bulk done: ${ok} ok, ${fail} failed`, fail ? 'err' : 'ok');
+  rvSelected.clear();
+  loadReview(true);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ── CASH TAB ─────────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+
+// Override the pager function names to avoid conflict with built-in
+function cashPage(delta) {
+  const next = cashCurrentPage + delta;
+  if (next < 1 || next > cashTotalPages) return;
+  cashCurrentPage = next;
+  loadCash(false);
+}
+
+function cashSearchDebounce() {
+  clearTimeout(cashSearchTimer);
+  cashSearchTimer = setTimeout(() => loadCash(true), 350);
+}
+
+function clearCashFilters() {
+  document.getElementById('cashQ').value = '';
+  document.getElementById('cashFrom').value = '';
+  document.getElementById('cashTo').value = '';
+  document.getElementById('cashSender').value = '';
+  loadCash(true);
+}
+
+async function loadCash(resetPage = false) {
+  if (resetPage) cashCurrentPage = 1;
+  const q       = document.getElementById('cashQ')?.value?.trim() || '';
+  const from    = document.getElementById('cashFrom')?.value || '';
+  const to      = document.getElementById('cashTo')?.value || '';
+  const sender  = document.getElementById('cashSender')?.value?.trim() || '';
+  const ps = 25;
+
+  const body = document.getElementById('cashBody');
+  if (body) body.innerHTML = '<tr><td colspan="8" class="empty">Loading…</td></tr>';
+
+  try {
+    const params = new URLSearchParams({ page: cashCurrentPage, page_size: ps });
+    if (q)      params.set('q', q);
+    if (from)   params.set('from', from);
+    if (to)     params.set('to', to);
+    if (sender) params.set('sender_phone', sender);
+
+    const data = await api('/cash?' + params.toString());
+    const rows = data.transactions || [];
+    cashTotalRecs  = data.total || 0;
+    cashTotalPages = data.pages || 1;
+
+    // Update summary stats
+    const s = data.summary || {};
+    const el = document.getElementById('cashTotal');
+    if (el) el.textContent = fmt(cashTotalRecs);
+    const el2 = document.getElementById('cashAmount');
+    if (el2) el2.textContent = fmt(Math.round(s.total_amount || 0));
+
+    // Render rows
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="8" class="empty">No cash transactions found.</td></tr>';
+    } else {
+      body.innerHTML = rows.map(r => `
+        <tr style="cursor:pointer" onclick="openCashDetail(${r.id})">
+          <td>${r.txn_date || '—'}</td>
+          <td>${esc(r.employee_name)}</td>
+          <td style="font-weight:600">৳${fmt(r.amount)}</td>
+          <td>${esc(r.sender_phone || '—')}</td>
+          <td>${esc(r.payout_method || '—')}</td>
+          <td style="font-size:11px;color:var(--muted)">${esc(r.txn_ref || '—')}</td>
+          <td>${esc(r.accounting_period || '—')}</td>
+          <td><button class="btn sm secondary" onclick="event.stopPropagation();openCashDetail(${r.id})">View</button></td>
+        </tr>
+      `).join('');
+    }
+
+    // Pager
+    const pager = document.getElementById('cashPager');
+    if (cashTotalPages > 1) {
+      pager.style.display = '';
+      document.getElementById('cashPageInfo').textContent = `Page ${cashCurrentPage} / ${cashTotalPages}`;
+      document.getElementById('cashPrev').disabled = cashCurrentPage <= 1;
+      document.getElementById('cashNext').disabled = cashCurrentPage >= cashTotalPages;
+    } else {
+      pager.style.display = 'none';
+    }
+  } catch(e) {
+    if (body) body.innerHTML = `<tr><td colspan="8" class="empty" style="color:var(--err)">Error: ${esc(e.message)}</td></tr>`;
+    showToast('Cash load error: ' + e.message, 'err');
+  }
+}
+
+async function openCashDetail(id) {
+  try {
+    const r = await api('/cash/' + id);
+    const lines = [
+      ['Ref',         r.txn_ref],
+      ['Date',        r.txn_date],
+      ['Period',      r.accounting_period],
+      ['Employee',    r.employee_name],
+      ['Emp ID Phone',r.employee_id_phone],
+      ['Amount',      '৳' + fmt(r.amount)],
+      ['Sender',      r.sender_phone || r.payout_phone],
+      ['Method',      r.payout_method],
+      ['Category',    r.txn_category],
+      ['Message',     r.message_body],
+      ['Created',     r.created_at ? r.created_at.slice(0,19).replace('T',' ') : '—'],
+    ];
+    document.getElementById('panelTitle').textContent = '💵 Cash #' + id;
+    document.getElementById('panelBody').innerHTML = `
+      <dl style="margin:0">
+        ${lines.map(([k,v]) => v ? `<dt style="font-size:11px;color:var(--muted);margin-top:8px">${esc(k)}</dt><dd style="margin:0;font-size:13px">${esc(String(v))}</dd>` : '').join('')}
+      </dl>
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,.15)">
+        <button class="btn sm secondary" onclick="closePanel()" style="background:rgba(255,255,255,.15);border:none;color:#fff">Close</button>
+      </div>
+    `;
+    document.getElementById('detailPanel').classList.add('open');
+  } catch(e) {
+    showToast('Could not load cash detail: ' + e.message, 'err');
+  }
+}
+
+// ── Staging Payments (WhatsApp Cash Shorthand) ────────────────────────────────
+let stagingCurrentPage = 1, stagingTotalPages = 1, stagingSearchTimer;
+
+function stagingSearchDebounce() {
+  clearTimeout(stagingSearchTimer);
+  stagingSearchTimer = setTimeout(() => loadStagingPayments(true), 350);
+}
+
+function stagingPage(dir) {
+  stagingCurrentPage = Math.max(1, Math.min(stagingTotalPages, stagingCurrentPage + dir));
+  loadStagingPayments(false);
+}
+
+const STAGING_STATUS_COLOR = {
+  auto_approved: 'color:#2ecc71;font-weight:600',
+  pending:       'color:#f39c12;font-weight:600',
+  unmatched:     'color:#e74c3c;font-weight:600',
+};
+
+async function loadStagingPayments(resetPage = false) {
+  if (resetPage) stagingCurrentPage = 1;
+  const status = document.getElementById('stagingStatusFilter')?.value || '';
+  const q      = document.getElementById('stagingQ')?.value?.trim() || '';
+  const body   = document.getElementById('stagingBody');
+  if (body) body.innerHTML = '<tr><td colspan="7" class="empty">Loading…</td></tr>';
+
+  try {
+    const params = new URLSearchParams({ page: stagingCurrentPage, page_size: 25 });
+    if (status) params.set('status', status);
+    if (q)      params.set('q', q);
+
+    const data = await api('/staging-payments?' + params.toString());
+    const rows = data.items || [];
+    stagingTotalPages = data.pages || 1;
+
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="7" class="empty">No staging entries found.</td></tr>';
+    } else {
+      body.innerHTML = rows.map(r => {
+        const st = r.status || 'pending';
+        const stStyle = STAGING_STATUS_COLOR[st] || '';
+        const dt = r.created_at ? r.created_at.slice(0,16).replace('T',' ') : '—';
+        return `<tr>
+          <td style="font-size:12px">${esc(dt)}</td>
+          <td>${esc(r.employee_name || r.extracted_name || '—')}</td>
+          <td style="font-size:12px;color:var(--muted)">${esc(r.extracted_mobile || '—')}</td>
+          <td style="font-weight:600">৳${fmt(r.amount)}</td>
+          <td>${esc(r.payment_method || '—')}</td>
+          <td style="font-size:12px;color:var(--muted)">${esc(r.sender_number || '—')}</td>
+          <td style="${stStyle}">${esc(st)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    const pager = document.getElementById('stagingPager');
+    if (stagingTotalPages > 1) {
+      pager.style.display = '';
+      document.getElementById('stagingPageInfo').textContent = `Page ${stagingCurrentPage} / ${stagingTotalPages}`;
+      document.getElementById('stagingPrev').disabled = stagingCurrentPage <= 1;
+      document.getElementById('stagingNext').disabled = stagingCurrentPage >= stagingTotalPages;
+    } else {
+      pager.style.display = 'none';
+    }
+  } catch(e) {
+    if (body) body.innerHTML = `<tr><td colspan="7" class="empty" style="color:var(--err)">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function exportCashCSV() {
+  const q      = document.getElementById('cashQ')?.value?.trim() || '';
+  const from   = document.getElementById('cashFrom')?.value || '';
+  const to     = document.getElementById('cashTo')?.value || '';
+  const sender = document.getElementById('cashSender')?.value?.trim() || '';
+  const params = new URLSearchParams({ page: 1, page_size: 1000 });
+  if (q)      params.set('q', q);
+  if (from)   params.set('from', from);
+  if (to)     params.set('to', to);
+  if (sender) params.set('sender_phone', sender);
+  try {
+    const data  = await api('/cash?' + params.toString());
+    const rows  = data.transactions || [];
+    const cols  = ['id','txn_ref','txn_date','accounting_period','employee_name','amount','sender_phone','payout_method','txn_category'];
+    const csv   = [cols.join(','), ...rows.map(r => cols.map(c => JSON.stringify(r[c] ?? '')).join(','))].join('\n');
+    const blob  = new Blob([csv], {type:'text/csv'});
+    const a     = Object.assign(document.createElement('a'), {href: URL.createObjectURL(blob), download:'cash_transactions.csv'});
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  } catch(e) { showToast('Export failed: ' + e.message, 'err'); }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ── INCOME TAB ───────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+
+function incomePage(delta) {
+  const next = incomeCurrentPage + delta;
+  if (next < 1 || next > incomeTotalPages) return;
+  incomeCurrentPage = next;
+  loadIncome(false);
+}
+
+function incomeSearchDebounce() {
+  clearTimeout(incomeSearchTimer);
+  incomeSearchTimer = setTimeout(() => loadIncome(true), 350);
+}
+
+function clearIncomeFilters() {
+  document.getElementById('incomeQ').value = '';
+  document.getElementById('incomePeriod').value = '';
+  document.getElementById('incomeFrom').value = '';
+  document.getElementById('incomeTo').value = '';
+  document.getElementById('incomeReporter').value = '';
+  loadIncome(true);
+}
+
+async function loadIncome(resetPage = false) {
+  if (resetPage) incomeCurrentPage = 1;
+  const q        = document.getElementById('incomeQ')?.value?.trim() || '';
+  const period   = document.getElementById('incomePeriod')?.value || '';
+  const from     = document.getElementById('incomeFrom')?.value || '';
+  const to       = document.getElementById('incomeTo')?.value || '';
+  const reporter = document.getElementById('incomeReporter')?.value?.trim() || '';
+  const ps = 25;
+
+  const body = document.getElementById('incomeBody');
+  if (body) body.innerHTML = '<tr><td colspan="7" class="empty">Loading…</td></tr>';
+
+  try {
+    const params = new URLSearchParams({ page: incomeCurrentPage, page_size: ps });
+    if (q)        params.set('q', q);
+    if (period)   params.set('period', period);
+    if (from)     params.set('from', from);
+    if (to)       params.set('to', to);
+    if (reporter) params.set('reporter_phone', reporter);
+
+    const data = await api('/income?' + params.toString());
+    const rows = data.transactions || [];
+    incomeTotalRecs  = data.total || 0;
+    incomeTotalPages = data.pages || 1;
+
+    // Summary stats
+    const s = data.summary || {};
+    const el = document.getElementById('incomeTotal');
+    if (el) el.textContent = fmt(incomeTotalRecs);
+    const elA = document.getElementById('incomeTotalAmt');
+    if (elA) elA.textContent = fmt(Math.round(s.total_amount || 0));
+    const elT = document.getElementById('incomeToday');
+    if (elT) elT.textContent = fmt(Math.round(s.today_amount || 0));
+    const elM = document.getElementById('incomeMonth');
+    if (elM) elM.textContent = fmt(Math.round(s.month_amount || 0));
+
+    // Render rows
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="7" class="empty">No income transactions found.</td></tr>';
+    } else {
+      body.innerHTML = rows.map(r => `
+        <tr style="cursor:pointer" onclick="openIncomeDetail(${r.id})">
+          <td>${r.txn_date || '—'}</td>
+          <td>${esc(r.employee_name)}${r.auto_created_employee ? ' <span class="pill" style="background:var(--warn);color:#fff;font-size:10px">auto</span>' : ''}</td>
+          <td style="font-weight:600">৳${fmt(r.amount)}</td>
+          <td>${esc(r.reported_by_phone || '—')}</td>
+          <td>${esc(r.accounting_period || '—')}</td>
+          <td style="font-size:11px;color:var(--muted)">${esc(r.txn_ref || '—')}</td>
+          <td><button class="btn sm secondary" onclick="event.stopPropagation();openIncomeDetail(${r.id})">View</button></td>
+        </tr>
+      `).join('');
+    }
+
+    // Pager
+    const pager = document.getElementById('incomePager');
+    if (incomeTotalPages > 1) {
+      pager.style.display = '';
+      document.getElementById('incomePageInfo').textContent = `Page ${incomeCurrentPage} / ${incomeTotalPages}`;
+      document.getElementById('incomePrev').disabled = incomeCurrentPage <= 1;
+      document.getElementById('incomeNext').disabled = incomeCurrentPage >= incomeTotalPages;
+    } else {
+      pager.style.display = 'none';
+    }
+  } catch(e) {
+    if (body) body.innerHTML = `<tr><td colspan="7" class="empty" style="color:var(--err)">Error: ${esc(e.message)}</td></tr>`;
+    showToast('Income load error: ' + e.message, 'err');
+  }
+}
+
+async function openIncomeDetail(id) {
+  try {
+    const r = await api('/income/' + id);
+    const lines = [
+      ['Ref',          r.txn_ref],
+      ['Date',         r.txn_date],
+      ['Period',       r.accounting_period],
+      ['Employee',     r.employee_name],
+      ['Emp ID Phone', r.employee_id_phone],
+      ['Amount',       '৳' + fmt(r.amount)],
+      ['Reported By',  r.reported_by_phone],
+      ['Auto Employee',r.auto_created_employee ? 'Yes (auto-created)' : 'No'],
+      ['Message',      r.message_body],
+      ['Created',      r.created_at ? r.created_at.slice(0,19).replace('T',' ') : '—'],
+    ];
+    document.getElementById('panelTitle').textContent = '📥 Income #' + id;
+    document.getElementById('panelBody').innerHTML = `
+      <dl style="margin:0">
+        ${lines.map(([k,v]) => v ? `<dt style="font-size:11px;color:var(--muted);margin-top:8px">${esc(k)}</dt><dd style="margin:0;font-size:13px">${esc(String(v))}</dd>` : '').join('')}
+      </dl>
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,.15)">
+        <button class="btn sm secondary" onclick="closePanel()" style="background:rgba(255,255,255,.15);border:none;color:#fff">Close</button>
+      </div>
+    `;
+    document.getElementById('detailPanel').classList.add('open');
+  } catch(e) {
+    showToast('Could not load income detail: ' + e.message, 'err');
+  }
+}
+
+async function exportIncomeCSV() {
+  const q        = document.getElementById('incomeQ')?.value?.trim() || '';
+  const period   = document.getElementById('incomePeriod')?.value || '';
+  const from     = document.getElementById('incomeFrom')?.value || '';
+  const to       = document.getElementById('incomeTo')?.value || '';
+  const reporter = document.getElementById('incomeReporter')?.value?.trim() || '';
+  const params = new URLSearchParams({ page: 1, page_size: 1000 });
+  if (q)        params.set('q', q);
+  if (period)   params.set('period', period);
+  if (from)     params.set('from', from);
+  if (to)       params.set('to', to);
+  if (reporter) params.set('reporter_phone', reporter);
+  try {
+    const data = await api('/income?' + params.toString());
+    const rows = data.transactions || [];
+    const cols = ['id','txn_ref','txn_date','accounting_period','employee_name','amount','reported_by_phone','message_body'];
+    const csv  = [cols.join(','), ...rows.map(r => cols.map(c => JSON.stringify(r[c] ?? '')).join(','))].join('\n');
+    const blob = new Blob([csv], {type:'text/csv'});
+    const a    = Object.assign(document.createElement('a'), {href: URL.createObjectURL(blob), download:'income_transactions.csv'});
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  } catch(e) { showToast('Export failed: ' + e.message, 'err'); }
+}
+</script>
+</body>
+</html>

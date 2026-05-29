@@ -10,6 +10,15 @@ from app.config import get_settings
 
 log = logging.getLogger("fazle.bridge")
 
+# TASK 5: Suffix appended to every outbound auto-generated message.
+# Checked before appending to prevent double-append on manual retries.
+_AUTOMATED_SUFFIX = (
+    "\n\n─────────────────\n"
+    "🤖 Automated Reply System\n"
+    "এই বার্তাটি স্বয়ংক্রিয়ভাবে তৈরি হয়েছে। ভুল হতে পারে।"
+)
+_AUTOMATED_SUFFIX_ANCHOR = "🤖 Automated Reply System"
+
 
 class BridgeSendError(Exception):
     """Raised by BridgeClient.send_strict on any non-2xx or transport failure."""
@@ -103,6 +112,13 @@ class BridgeClient:
         """Strict send: raises BridgeSendError on any failure. Used by outbound queue."""
         if not jid.endswith("@s.whatsapp.net") and not jid.endswith("@g.us"):
             jid = jid + "@s.whatsapp.net"
+        # TASK 5: Append automated-reply marker (prevent double-append)
+        if _AUTOMATED_SUFFIX_ANCHOR not in text:
+            text = text + _AUTOMATED_SUFFIX
+            log.info("[BRIDGE_MARKER_APPENDED] label=%s jid=%s", self.label, jid)
+        else:
+            log.debug("[BRIDGE_MARKER_PRESENT] label=%s jid=%s", self.label, jid)
+        log.info(f"[BRIDGE_SEND_START] label={self.label} jid={jid} body={text[:60]!r}")
         try:
             await self._set_send(True)
             r = await self._client.post(
@@ -110,8 +126,11 @@ class BridgeClient:
                 json={"recipient": jid, "message": text},
             )
             if r.status_code != 200:
+                log.error(f"[BRIDGE_SEND_FAIL] label={self.label} jid={jid} http={r.status_code} body={r.text[:100]}")
                 raise BridgeSendError(f"http {r.status_code}: {r.text[:200]}")
+            log.info(f"[BRIDGE_SEND_SUCCESS] label={self.label} jid={jid}")
         except httpx.HTTPError as e:
+            log.error(f"[BRIDGE_SEND_FAIL] label={self.label} jid={jid} transport={e}")
             raise BridgeSendError(f"transport: {e}") from e
         finally:
             await self._set_send(False)
@@ -119,6 +138,11 @@ class BridgeClient:
     async def send_multi(self, jid: str, messages: list[str]) -> bool:
         if not jid.endswith("@s.whatsapp.net") and not jid.endswith("@g.us"):
             jid = jid + "@s.whatsapp.net"
+        # TASK 5: Append marker to last message only (avoid cluttering multi-part sends)
+        if messages and _AUTOMATED_SUFFIX_ANCHOR not in messages[-1]:
+            messages = list(messages)
+            messages[-1] = messages[-1] + _AUTOMATED_SUFFIX
+            log.info("[BRIDGE_MARKER_APPENDED_MULTI] label=%s jid=%s", self.label, jid)
         try:
             await self._set_send(True)
             for msg in messages:
@@ -132,6 +156,22 @@ class BridgeClient:
             return False
         finally:
             await self._set_send(False)
+
+    async def ensure_enabled(self) -> bool:
+        """Enable outbound send-control and confirm. Called at startup to survive bridge restarts."""
+        try:
+            await self._client.post(
+                f"{self.base_url}/api/send-control",
+                json={"allow": True},
+                timeout=5.0,
+            )
+            r = await self._client.get(f"{self.base_url}/api/send-status", timeout=5.0)
+            allowed = r.json().get("allowed", False)
+            log.info(f"[{self.label}] send-control ensure: allowed={allowed}")
+            return bool(allowed)
+        except Exception as e:
+            log.warning(f"[{self.label}] send-control ensure failed: {e}")
+            return False
 
     async def status(self) -> dict:
         try:

@@ -52,6 +52,8 @@ class EscortSlipResult(TypedDict):
     completion_date: Optional[str]
     completion_time: Optional[str]
     release_place: Optional[str]
+    start_shift: Optional[str]     # D or N (parser-only, not saved to DB)
+    end_shift: Optional[str]       # D or N (parser-only, not saved to DB)
     signatures: SignatureResult
     confidence: float
     missing_fields: list[str]
@@ -69,6 +71,30 @@ REQUIRED_FIELDS = [
 FULL_FIELDS = REQUIRED_FIELDS + [
     "master_mobile", "start_time", "completion_time", "release_place",
 ]
+
+
+# ── Label blacklist — these strings can NEVER be a business field value ───────
+
+_LABEL_BLACKLIST: frozenset = frozenset({
+    "appointed by", "escort appointed by", "mobile no", "mobile no.",
+    "mobde no", "mobde no.", "mob no", "mob no.",
+    "no.", "date", "time", "date & time", "date time", "signature",
+    "release place", "lighter master", "master mobile", "escort mobile",
+    "name of escort", "date & time start", "date & time complection",
+    "date & time completion", "authorized", "company", "escort",
+    "escort name", "master mob", "escort mob", "ghat supervisor",
+    "lighter vessel", "mother vessel", "name of mother vessel",
+    "name of lighter vessel", "present address", "house village",
+    "advanced pay", "father/mother name", "ghat escort advance",
+    "escort suppliers", "suppliers", "word thana", "district",
+    "village/area", "m. no", "m.no",
+})
+
+# Words that disqualify a release_place candidate
+_SIGNATURE_WORDS: frozenset = frozenset({
+    "signature", "authorized", "sign", "seal", "signed",
+    "lighter master", "ghat supervisor", "company",
+})
 
 
 # ── Document type detection ────────────────────────────────────────────────────
@@ -238,9 +264,9 @@ def _normalize_vessel(name: Optional[str]) -> Optional[str]:
 def _normalize_phone(phone: Optional[str]) -> Optional[str]:
     if not phone:
         return None
-    # Replace common OCR confusions: O→0, I→1, l→1
+    # Replace common OCR confusions: O→0, I→1, l→1, S→5, B→8, Z→2
     phone = phone.strip()
-    phone = phone.translate(str.maketrans("OIlS", "0115"))
+    phone = phone.translate(str.maketrans("OIlSBZ", "011582"))
     # Keep only digits and hyphens
     phone = re.sub(r"[^\d\-]", "", phone)
     # Bangladesh mobile: 11 digits starting 01, or with country code 880
@@ -257,24 +283,32 @@ def _normalize_date(raw: Optional[str]) -> Optional[str]:
     if not raw:
         return None
     raw = raw.strip()
+    # Normalize OCR char confusions before digit processing
+    raw = raw.translate(str.maketrans("OIlS", "0115"))
     # Fix OCR spacing: "9-02-20 6" → "9-02-2026"
     raw = re.sub(r"(\d)\s+(\d)", r"\1\2", raw)
-    # Normalize separators to -
-    raw = re.sub(r"[./]", "-", raw)
+    # Normalize separators (also allow space as separator e.g. "10 05 2026")
+    raw = re.sub(r"[./ ]", "-", raw)
+    # Collapse multiple dashes
+    raw = re.sub(r"-{2,}", "-", raw)
 
     m = re.match(r"(\d{1,2})-(\d{1,2})-(\d{2,4})", raw)
     if not m:
-        return raw
+        return None  # reject non-date garbage
     day, month, year = m.group(1), m.group(2), m.group(3)
     if len(year) == 2:
         year = "20" + year
     try:
         day_i, month_i, year_i = int(day), int(month), int(year)
-        if month_i > 12 and day_i <= 12:
-            day_i, month_i = month_i, day_i
+        if not (1 <= day_i <= 31 and 1 <= month_i <= 12 and 2000 <= year_i <= 2100):
+            # Attempt day/month swap before rejecting
+            if month_i > 12 and day_i <= 12:
+                day_i, month_i = month_i, day_i
+            else:
+                return None  # out of range — reject
         return f"{day_i:02d}-{month_i:02d}-{year_i}"
     except ValueError:
-        return raw
+        return None
 
 
 def _normalize_time(raw: Optional[str]) -> Optional[str]:
@@ -295,6 +329,135 @@ def _normalize_time(raw: Optional[str]) -> Optional[str]:
     return raw
 
 
+# ── Field validators ──────────────────────────────────────────────────────────
+
+def _is_valid_name(val: str) -> bool:
+    """Accept human-name-like values; reject label words, digits, garbage."""
+    if not val:
+        return False
+    v = val.strip()
+    if len(v) < 3:
+        return False
+    vl = v.lower()
+    # Reject exact blacklist match
+    if vl in _LABEL_BLACKLIST:
+        return False
+    # Reject if starts with any blacklisted phrase
+    for lbl in _LABEL_BLACKLIST:
+        if vl.startswith(lbl):
+            return False
+    # Reject if contains signature/date keywords
+    for sw in _SIGNATURE_WORDS:
+        if sw in vl:
+            return False
+    # Reject if mostly digits (more than 40%)
+    digits = sum(c.isdigit() for c in v)
+    if digits > len(v) * 0.4:
+        return False
+    # Must have at least 3 alphabetic chars (latin or bengali)
+    alpha = re.sub(r"[^a-zA-Z\u0980-\u09FF]", "", v)
+    if len(alpha) < 3:
+        return False
+    return True
+
+
+def _ocr_phone_normalize(val: str) -> str:
+    """Normalize OCR confusions in phone number candidates."""
+    val = val.translate(str.maketrans("OoIlSBZ", "0011582"))
+    # Collapse spaces/dashes inside digit runs
+    val = re.sub(r"(\d)[\s\-]+(\d)", r"\1\2", val)
+    return val
+
+
+def _is_valid_phone_candidate(val: str) -> bool:
+    """Return True if val can be normalized to a valid Bangladesh mobile number."""
+    if not val:
+        return False
+    normalized = _ocr_phone_normalize(val)
+    digits = re.sub(r"\D", "", normalized)
+    if len(digits) == 11 and digits.startswith("01") and digits[2] in "3456789":
+        return True
+    if len(digits) == 13 and digits.startswith("880") and digits[3] == "1" and digits[4] in "3456789":
+        return True
+    return False
+
+
+def _is_valid_date_candidate(val: str) -> bool:
+    """Return True if val looks like a real date (after OCR normalization)."""
+    if not val:
+        return False
+    v = val.strip().translate(str.maketrans("OIlS", "0115"))
+    v = re.sub(r"(\d)\s+(\d)", r"\1\2", v)
+    # Must match a recognizable date pattern
+    if re.search(r"\d{1,2}[./ \-]\d{1,2}[./ \-]\d{2,4}", v):
+        return True
+    if re.search(r"\d{4}-\d{2}-\d{2}", v):
+        return True
+    return False
+
+
+def _is_valid_release_place(val: str) -> bool:
+    """Reject signature/label contamination in release_place."""
+    if not val or len(val.strip()) < 3:
+        return False
+    vl = val.strip().lower()
+    for sw in _SIGNATURE_WORDS:
+        if sw in vl:
+            return False
+    if vl in _LABEL_BLACKLIST:
+        return False
+    # Reject if value is mostly digits / looks like a reference number
+    digits = sum(c.isdigit() for c in vl)
+    if digits > len(vl) * 0.4:
+        return False
+    # Must have at least 3 alphabetic characters
+    alpha = re.sub(r"[^a-zA-Z\u0980-\u09FF]", "", vl)
+    if len(alpha) < 3:
+        return False
+    return True
+
+
+def _score_field_value(field: str, val: str) -> int:
+    """Score a candidate value for a field. Negative = invalid/reject."""
+    v = val.strip() if val else ""
+    if not v or len(v) < 2:
+        return -1
+    if field == "escort_name":
+        return 2 if _is_valid_name(v) else -5
+    if field in ("escort_mobile", "master_mobile"):
+        return 2 if _is_valid_phone_candidate(v) else -5
+    if field in ("start_date", "completion_date"):
+        return 2 if _is_valid_date_candidate(v) else -5
+    if field == "release_place":
+        return 2 if _is_valid_release_place(v) else -5
+    return 1  # generic non-empty pass
+
+
+def _extract_shift(text: str) -> tuple:
+    """Extract start_shift and end_shift (D or N) from OCR text."""
+    # Keyed by the D/N character position to avoid duplicates
+    found_by_pos: dict = {}
+    # Explicit markers take priority: (D), (N), DAY, NIGHT
+    for pat, norm in [(r"\(D\)", "D"), (r"\(N\)", "N"),
+                      (r"\bDAY\b", "D"), (r"\bNIGHT\b", "N")]:
+        for m in re.finditer(pat, text, re.IGNORECASE):
+            # Key on the D or N char inside the match, not the full-match start
+            inner = re.search(r"[DN]", m.group(0), re.IGNORECASE)
+            key = m.start() + (inner.start() if inner else 0)
+            found_by_pos[key] = norm
+    # Standalone D or N only near time/date context (don't overwrite explicit)
+    for m in re.finditer(r"\b([DN])\b", text, re.IGNORECASE):
+        if m.start() in found_by_pos:
+            continue
+        ctx = text[max(0, m.start() - 40): m.end() + 40].lower()
+        if any(kw in ctx for kw in ("time", "date", "shift", "start", "comp")):
+            found_by_pos[m.start()] = m.group(1).upper()
+    shifts = [s for _, s in sorted(found_by_pos.items())]
+    start_shift: Optional[str] = shifts[0] if shifts else None
+    end_shift: Optional[str] = shifts[1] if len(shifts) >= 2 else None
+    return start_shift, end_shift
+
+
 # ── Template extraction (printed form — region patterns) ──────────────────────
 
 # Label patterns for each field, matched against lines of OCR text
@@ -313,30 +476,89 @@ _TEMPLATE_PATTERNS: dict[str, list[str]] = {
 
 
 def _extract_template_fields(text: str) -> dict:
-    fields: dict[str, Optional[str]] = {k: None for k in _TEMPLATE_PATTERNS}
+    """
+    Extract fields from printed template form.
+
+    Improvement: collects ALL candidate matches across all lines,
+    scores by (pattern specificity + value validity), picks best.
+    No first-match lock — better candidate always wins.
+    """
+    # best candidate per field: (score, value)
+    best: dict[str, tuple] = {k: (-999, None) for k in _TEMPLATE_PATTERNS}
     lines = text.splitlines()
 
     for i, line in enumerate(lines):
         line_lower = line.lower().strip()
-        # Also look at joined line+next for multi-line label/value pairs
+        if not line_lower:
+            continue
+
+        # Zone: same line text + next 3 non-empty lines (for multi-line label/value)
+        zone: list = [line.strip()]
+        for j in range(i + 1, min(i + 5, len(lines))):
+            nl = lines[j].strip()
+            if nl:
+                zone.append(nl)
+            if len(zone) >= 4:
+                break
+
         next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
         combined = line_lower + " " + next_line.lower()
 
         for field, patterns in _TEMPLATE_PATTERNS.items():
-            if fields[field]:
-                continue
-            for pat in patterns:
+            n_pats = len(patterns)
+            for pat_idx, pat in enumerate(patterns):
                 m = re.search(pat, combined, re.IGNORECASE)
-                if m:
-                    val = m.group(1).strip()
-                    # If value looks empty, take next_line as value
-                    if not val or len(val) < 2:
-                        val = next_line.strip()
-                    if val and len(val) >= 2:
-                        fields[field] = val
-                    break
+                if not m:
+                    continue
 
-    return fields
+                raw_val = m.group(1).strip()
+
+                # If inline capture is short/empty, scan zone lines for actual value
+                if not raw_val or len(raw_val) < 2:
+                    for zone_line in zone[1:]:
+                        candidate = zone_line.strip()
+                        if candidate and len(candidate) >= 2:
+                            raw_val = candidate
+                            break
+
+                if not raw_val or len(raw_val) < 2:
+                    continue
+
+                # Reject if the captured value is itself a label/blacklisted phrase
+                rv_lower = raw_val.strip().lower()
+                if rv_lower in _LABEL_BLACKLIST:
+                    continue
+                if any(rv_lower.startswith(lbl) for lbl in _LABEL_BLACKLIST):
+                    continue
+
+                # Type-specific validity score
+                val_score = _score_field_value(field, raw_val)
+                if val_score < 0:
+                    # Try zone lines as alternative values before giving up
+                    found_alt = False
+                    for zone_line in zone[1:]:
+                        alt = zone_line.strip()
+                        if alt and len(alt) >= 2:
+                            alt_lower = alt.lower()
+                            if alt_lower not in _LABEL_BLACKLIST and not any(
+                                alt_lower.startswith(lbl) for lbl in _LABEL_BLACKLIST
+                            ):
+                                alt_score = _score_field_value(field, alt)
+                                if alt_score >= 0:
+                                    raw_val = alt
+                                    val_score = alt_score
+                                    found_alt = True
+                                    break
+                    if not found_alt:
+                        continue
+
+                # Score: earlier (more specific) pattern = higher specificity bonus
+                score = (n_pats - pat_idx) + val_score
+                if score > best[field][0]:
+                    best[field] = (score, raw_val)
+                # Do not break — allow later more-specific patterns to win
+
+    return {k: v for k, (_, v) in best.items()}
 
 
 # ── Handwritten / NLP extraction ───────────────────────────────────────────────
@@ -362,6 +584,15 @@ _HW_PATTERNS: dict[str, list[str]] = {
 
 
 def _extract_handwritten_fields(text: str) -> dict:
+    """
+    Extract fields from handwritten slip.
+
+    Improvements:
+    - OCR-normalized mobile scanning (O→0, I→1 etc.)
+    - Validates dates/mobiles before accepting
+    - Candidate collection with scoring (no first-match lock)
+    - _score_field_value guards escort_name / release_place from labels
+    """
     fields: dict[str, Optional[str]] = {
         "mother_vessel": None, "lighter_vessel": None, "master_mobile": None,
         "escort_name": None, "escort_mobile": None, "start_date": None,
@@ -370,52 +601,89 @@ def _extract_handwritten_fields(text: str) -> dict:
     }
     lines = [l.strip() for l in text.splitlines() if l.strip()]
 
-    # Extract all dates and times in document order
-    all_dates = _DATE_RE.findall(text)
+    # OCR-normalized copy for mobile scanning
+    norm_text = text.translate(str.maketrans("OoIlSBZ", "0011582"))
+
+    # Extract all dates (validated) and times in document order
+    raw_dates = _DATE_RE.findall(text)
+    valid_dates = [d for d in raw_dates if _is_valid_date_candidate(d)]
     all_times = _TIME_RE.findall(text)
-    all_mobiles = _MOBILE_RE.findall(text)
 
-    # First date → start, second date → completion
-    if len(all_dates) >= 1:
-        fields["start_date"] = all_dates[0]
-    if len(all_dates) >= 2:
-        fields["completion_date"] = all_dates[1]
+    # Mobile scan on OCR-normalized text; validate each hit
+    raw_mobiles = _MOBILE_RE.findall(norm_text)
+    valid_mobiles = [m for m in raw_mobiles if _is_valid_phone_candidate(m)]
 
-    # First time → start time, second → completion time
+    # Positional assignment (start/completion dates, start/completion times)
+    if len(valid_dates) >= 1:
+        fields["start_date"] = valid_dates[0]
+    if len(valid_dates) >= 2:
+        fields["completion_date"] = valid_dates[1]
     if len(all_times) >= 1:
         fields["start_time"] = all_times[0]
     if len(all_times) >= 2:
         fields["completion_time"] = all_times[1]
+    if len(valid_mobiles) >= 1:
+        fields["master_mobile"] = valid_mobiles[0]
+    if len(valid_mobiles) >= 2:
+        fields["escort_mobile"] = valid_mobiles[-1]
 
-    # Mobile numbers: first → master_mobile, last → escort_mobile if different
-    if len(all_mobiles) >= 1:
-        fields["master_mobile"] = all_mobiles[0]
-    if len(all_mobiles) >= 2:
-        fields["escort_mobile"] = all_mobiles[-1]
+    # Candidate collection for label-based fields (no first-match lock)
+    candidates: dict[str, list] = {k: [] for k in _HW_PATTERNS}
 
-    # Line-by-line contextual extraction
     for i, line in enumerate(lines):
         line_lower = line.lower()
         next_val = lines[i + 1] if i + 1 < len(lines) else ""
 
         for field, triggers in _HW_PATTERNS.items():
-            if fields[field]:
-                continue
-            for trigger in triggers:
-                if trigger in line_lower:
-                    # Value is text after the trigger, or next line
-                    after = re.split(re.escape(trigger), line_lower, maxsplit=1, flags=re.IGNORECASE)[-1].strip()
-                    val = after if len(after) >= 2 else next_val.strip()
-                    # For vessel names: grab capitalized words
-                    if field in ("mother_vessel", "lighter_vessel"):
-                        vessel_m = re.search(r"[A-Z][A-Z\s\-\.]{2,30}", line)
-                        if vessel_m:
-                            val = vessel_m.group(0).strip()
-                    if val and len(val) >= 2:
-                        fields[field] = val
-                    break
+            for t_idx, trigger in enumerate(triggers):
+                if trigger not in line_lower:
+                    continue
 
-    # MV / M.V pattern for vessel names anywhere in text
+                # Extract text after trigger on same line (preserve original case)
+                trig_pos = line_lower.find(trigger)
+                orig_after = line[trig_pos + len(trigger):].strip(" :.")
+
+                val = orig_after if len(orig_after) >= 2 else next_val.strip()
+
+                if not val or len(val) < 2:
+                    continue
+
+                # For vessel names: prefer capitalized word run
+                if field in ("mother_vessel", "lighter_vessel"):
+                    vessel_m = re.search(r"[A-Z][A-Z\s\-\.]{2,30}", line)
+                    if vessel_m:
+                        val = vessel_m.group(0).strip()
+
+                # Validate
+                score = _score_field_value(field, val)
+                if score < 0:
+                    # Try next_val as fallback
+                    if next_val and len(next_val) >= 2:
+                        score2 = _score_field_value(field, next_val)
+                        if score2 >= 0:
+                            val = next_val
+                            score = score2
+                        else:
+                            continue
+                    else:
+                        continue
+
+                # More specific triggers (earlier in list) score higher
+                total = (len(triggers) - t_idx) + score
+                candidates[field].append((total, val))
+                break  # matched a trigger; move to next field for this line
+
+    # Pick best candidate per label-based field
+    for field, cands in candidates.items():
+        if cands:
+            _, best_val = max(cands, key=lambda x: x[0])
+            # For non-positional fields: allow overwrite only if validated
+            if field in ("escort_name", "escort_mobile", "master_mobile", "release_place"):
+                fields[field] = best_val
+            elif not fields.get(field):
+                fields[field] = best_val
+
+    # MV / M.V pattern for vessel names (fallback)
     if not fields["mother_vessel"]:
         m = re.search(r"(?:M\.?V\.?|Motor\s+Vessel)\s+([A-Z][A-Z\s\-]{2,30})", text, re.IGNORECASE)
         if m:
@@ -516,16 +784,27 @@ async def extract_escort_slip(
     log.info(f"[escort_extractor] doc_type={doc_type} text_len={len(raw_text)}")
 
     # Choose extraction strategy
-    if doc_type == "printed_template_slip":
-        fields = _extract_template_fields(raw_text)
-    elif doc_type == "handwritten_blank_slip":
+    if doc_type == "handwritten_blank_slip":
         fields = _extract_handwritten_fields(raw_text)
     else:
-        # mixed_form / unknown: try template first, fill gaps with handwritten
+        # printed_template_slip / mixed_form / unknown:
+        # Template extraction first, then let validated handwritten fill gaps
+        # or overwrite any template value that fails type-specific validation.
         fields = _extract_template_fields(raw_text)
         hw = _extract_handwritten_fields(raw_text)
         for k, v in hw.items():
-            if not fields.get(k) and v:
+            if not v:
+                continue
+            template_val = fields.get(k)
+            if not template_val:
+                fields[k] = v
+            elif k == "escort_name" and not _is_valid_name(template_val):
+                fields[k] = v
+            elif k in ("escort_mobile", "master_mobile") and not _is_valid_phone_candidate(template_val):
+                fields[k] = v
+            elif k in ("start_date", "completion_date") and not _is_valid_date_candidate(template_val):
+                fields[k] = v
+            elif k == "release_place" and not _is_valid_release_place(template_val):
                 fields[k] = v
 
     # Normalize all fields
@@ -540,6 +819,9 @@ async def extract_escort_slip(
 
     # Signature detection
     signatures = detect_signatures(raw_text)
+
+    # Shift extraction (parser-only output, not persisted to DB)
+    start_shift, end_shift = _extract_shift(raw_text)
 
     # Missing fields
     missing = [f for f in FULL_FIELDS if not fields.get(f)]
@@ -560,6 +842,8 @@ async def extract_escort_slip(
         "completion_date": fields.get("completion_date"),
         "completion_time": fields.get("completion_time"),
         "release_place": fields.get("release_place"),
+        "start_shift": start_shift,
+        "end_shift": end_shift,
         "signatures": signatures,
         "confidence": confidence,
         "missing_fields": missing,
@@ -635,6 +919,8 @@ async def test_report(file_path: str) -> str:
         f"  Completion Date  : {r['completion_date'] or '—'}",
         f"  Completion Time  : {r['completion_time'] or '—'}",
         f"  Release Place    : {r['release_place'] or '—'}",
+        f"  Start Shift      : {r.get('start_shift') or '—'}",
+        f"  End Shift        : {r.get('end_shift') or '—'}",
         "",
         "Signatures:",
         f"  Lighter Master   : {'YES' if r['signatures']['lighter_master_signed'] else 'NO'}",

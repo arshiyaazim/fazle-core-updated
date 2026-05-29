@@ -1,0 +1,404 @@
+# JARVIS — Autonomous AI Command Platform
+## Vision
+A single-VPS, Docker-native, local-first AI platform that acts as a personal Jarvis: answering phone calls, managing security business operations, handling employee/client relationships, generating invoices, and reasoning autonomously — all through one unified interface.
+---
+## Architecture Philosophy: "Lean & Smart"
+**5 Core Principles:**
+1. **One Brain, Many Agents** — Single Ollama model (`qwen2.5:1.5b`) + GPT-4o fallback, orchestrated by 9 specialized agents
+2. **Minimal Containers, Maximum Capability** — ~12 Docker services (not 40), each doing more
+3. **DB-First Intelligence** — PostgreSQL + pgvector replaces Qdrant; one DB does semantic memory + relational + vector
+4. **Event-Driven, Not Polling** — WebSocket + SSE for real-time; no busy loops
+5. **Mobile-Native Voice** — LiveKit WebRTC + Twilio SIP for sub-second Jarvis-style voice
+---
+## File 1: README.md (this file) — System Blueprint
+## File 2: docker-compose.yml — All 12 services, networks, volumes
+## File 3: src/agents/brain.ts — 9-agent orchestration engine
+## File 4: src/store/appStore.ts — Zustand global state (DB tables as slices)
+## File 5: src/components/JarvisInterface.tsx — Unified UI (chat + voice + dashboard)
+## File 6: src/api/ollamaClient.ts — LLM client with fallback, caching, streaming
+---
+## Database Tables (PostgreSQL + pgvector)
+| Table | Purpose |
+|---|---|
+| `daily_cash_payment` | Cash flow tracking per day |
+| `vessel_security_duty` | Vessel guard duty assignments |
+| `manned_security_duty` | Static/manned guard posts |
+| `recruitment_conversation` | Hiring AI chat logs |
+| `onduty_escort_conversation` | Escort team AI interactions |
+| `onduty_guard_conversation` | On-duty guard AI interactions |
+| `office_staff_conversation` | Office team AI chats |
+| `vessel_clients_log` | Vessel client CRM records |
+| `guard_clients_log` | Guard service client CRM |
+| `invoice_salary_generation` | AI-generated invoices & salaries |
+| `personal_vision_life` | Personal goals & life planning |
+| `my_family` | Family records & interactions |
+| `knowledge_store` | Semantic knowledge + embeddings |
+| `agent_memory` | Persistent agent conversation memory |
+| `contact_intelligence` | HOT/WARM/COLD/RISK classification |
+| `task_queue` | Autonomous background tasks |
+| `system_logs` | Full audit trail + trace IDs |
+---
+## 9 AI Agents
+| Agent | Role |
+|---|---|
+| `ConversationAgent` | Multi-turn chat, tone adaptation |
+| `MemoryAgent` | Semantic recall from pgvector |
+| `ResearchAgent` | Web search + knowledge synthesis |
+| `TaskAgent` | Goal decomposition + execution |
+| `ToolAgent` | DB queries, invoice gen, calculations |
+| `VoiceAgent` | LiveKit STT/TTS orchestration |
+| `SocialAgent` | WhatsApp/FB intent + contact scoring |
+| `SystemAgent` | Health monitoring + self-healing |
+| `LearningAgent` | Pattern analysis + model fine-tuning data |
+---
+## Docker Services (12 containers)
+```
+jarvis-web        → React frontend (Nginx)
+jarvis-api        → FastAPI backend (Python)
+jarvis-worker     → Celery async task worker
+jarvis-scheduler  → Celery Beat (cron jobs)
+jarvis-db         → PostgreSQL 16 + pgvector
+jarvis-redis      → Redis (cache + message broker)
+jarvis-ollama     → Ollama (qwen2.5:1.5b)
+jarvis-livekit    → LiveKit WebRTC server
+jarvis-prometheus → Metrics collection
+jarvis-grafana    → Metrics dashboard
+jarvis-loki       → Log aggregation
+jarvis-nginx      → Reverse proxy + SSL
+```
+---
+## Quick Start (VPS Deployment)
+```bash
+# 1. Clone & configure
+git clone <repo> jarvis && cd jarvis
+cp .env.example .env
+# Edit .env: OPENAI_API_KEY, TWILIO_*, LIVEKIT_*, DOMAIN
+# 2. Pull Ollama model
+docker compose run --rm jarvis-ollama ollama pull qwen2.5:1.5b
+# 3. Launch all services
+docker compose up -d
+# 4. Initialize database
+docker compose exec jarvis-api python manage.py migrate
+# 5. Access
+# Web UI:    https://your-domain.com
+# Grafana:   https://your-domain.com/grafana
+# API Docs:  https://your-domain.com/api/docs
+```
+---
+## Voice Flow (Jarvis Call Handling)
+```
+Inbound Call → Twilio SIP → LiveKit Room → VoiceAgent
+    → STT (Whisper/Deepgram) → ConversationAgent + MemoryAgent
+    → LLM (Ollama/GPT-4o) → ToolAgent (if action needed)
+    → TTS (ElevenLabs/Kokoro) → LiveKit → Twilio → Caller
+```
+## Trace IDs
+All requests carry a trace ID (`X-Trace-ID` header) matching pattern `*:db56bc57-4d33-*` for distributed tracing. Resume point: `a46f4351-8b61` = API agent routing layer.
+---
+## Security Business Modules
+- **Daily Cash**: Auto-reconciliation + anomaly detection
+- **Duty Roster**: AI-optimized guard scheduling
+- **Client CRM**: Vessel + Guard client relationship scoring
+- **Invoice Engine**: Auto-generate PDF invoices + salary slips
+- **Recruitment**: AI screens candidates via conversation
+- **Escort/Guard Chat**: Jarvis briefs teams on duty details
+---
+*Built for: Single-operator security business management + personal AI assistant*
+*Model: Ollama qwen2.5:1.5b (local) + GPT-4o (fallback)*
+*Latency target: <800ms voice, <200ms chat*
+
+Organized Requirements Document: Escort Service Management Web App
+________________________________________
+1. PROJECT OVERVIEW
+I want to build a web application to manage the following:
+1.	Employee Records – Maintain personal and salary-related data for each escort employee.
+2.	Mother Vessel–wise Records – Track escort assignments per Mother Vessel for bill generation.
+3.	Employee Name–wise Records – Track each employee's assignments for salary calculation.
+________________________________________
+2. DATA SOURCES & INPUT METHODS
+2.1 Order Reception (via WhatsApp Messages)
+I receive escort service orders through WhatsApp messages. These messages vary in format but contain consistent data points.
+________________________________________
+2.2 Message Parsing Rules
+Key Data Points to Extract
+Field	Description
+Mother Vessel	The main cargo ship (e.g., MV F Glory, MV Atlantic Ocean)
+Lighter Vessel	The smaller transport vessel (e.g., MV Meta-1, Malekul Bahar-2)
+Master Mobile Number	The lighter vessel master's phone number
+Destination Point	Where the lighter vessel is headed (e.g., Rupshi, N. Para, Noapara)
+Fields to Ignore
+•	Importer's name (e.g., Nabil)
+•	Product name (e.g., Wheat, Soybeans Meals In Bulk)
+•	Lighter vessel capacity (e.g., 1200 M.T., 2500 Mts)
+Structural Parsing Rule
+Lighter Vessel Name, Mobile Number, and Destination Point — these three pieces of information always stay close together.
+Mother Vessel Name stays separate from that group — either at the beginning or the end of the message.
+Additional Parsing Rules
+•	If there is one mobile number, it means one lighter vessel needs escort service.
+•	If there are multiple mobile numbers, each corresponds to a separate lighter vessel assignment.
+•	The text "# [Lighter Name] cancel" means a previously assigned lighter vessel is cancelled and replaced by a new lighter vessel in the same message.
+•	A leading '0' in any number must always be preserved (e.g., 01782610995 must not become 1782610995).
+________________________________________
+3. SAMPLE ORDER MESSAGES & PARSING
+Example 1 — Simple Single-Lighter Order
+Message:
+"1) Mv Meta 1 Capacity 2500Mts. Rupshi A/c R B 01712639756 At-O/A Mv F Glory"
+Parsed Data:
+Field	Value
+Mother Vessel	MV F Glory
+Lighter Vessel	MV Meta-1
+Master Mobile	01712639756
+Destination	Rupshi
+________________________________________
+Example 2 — Cancellation & Replacement
+Message:
+"Mv.Atlantic ocean/Nabil/wheat # Banglar modhumoti cancel 1.malekul bahar 2-01955765322 n.para 1200 m.t"
+Parsed Data:
+Field	Value
+Mother Vessel	MV Atlantic Ocean
+Cancelled Lighter	Banglar Modhumoti (cancelled)
+New Lighter Vessel	Malekul Bahar-2
+Master Mobile	01955765322
+Destination	N. Para
+Ignored	Nabil (Importer), Wheat (Product), 1200 M.T. (Capacity)
+________________________________________
+Example 3 — Structured Multi-Lighter Order
+Message:
+"MV: GM FORTUNE (Soybeans Meals In Bulk)
+Date- 12/04/2026
+Lighter Program for Alpha A/C- Suguna
+01) MV: Jewel-6 Cap: 900 Mt Dest: Noapara Mob: 01827-128225
+02) MV: Jewel-5 Cap: 900 Mt Dest: Noapara Mob: 01627-361015
+Best Regards ANJ Trading"
+Parsed Data:
+#	Mother Vessel	Lighter Vessel	Master Mobile	Destination
+1	MV GM Fortune	Jewel-6	01827-128225	Noapara
+2	MV GM Fortune	Jewel-5	01627-361015	Noapara
+________________________________________
+Example 4 — Single Lighter with Specific Notes
+Message:
+"(36)CITY-69 M.V.UASNEE NAREE Place: OUTER A/C = NABIL Along said 17:50hrs 12-04-26 Mst:hafizur Rahman Mst M No:01939123424 Capacity:3300MT"
+Parsed Data:
+Field	Value
+Mother Vessel	MV UASNEE NAREE
+Lighter Vessel	CITY-69
+Master Mobile	01939123424
+Destination	OUTER (or as specified)
+________________________________________
+Example 5 — Partial Cargo / Local
+Message:
+"Mv.Bright falcon/Alal feed/wheat 1. S T 1-01321170929 local part cargo (Lighter capacity 1800 m.t)"
+Parsed Data:
+Field	Value
+Mother Vessel	MV Bright Falcon
+Lighter Vessel	ST-1
+Master Mobile	01321170929
+Destination	Local
+________________________________________
+4. REPLY MESSAGE SYSTEM
+4.1 Auto-Generated Reply Template
+When I paste an order message into the app's chat interface, the system should auto-generate a reply message template with the following rules:
+Date & Time Logic
+Time Range	Code
+6:00 AM – 5:59 PM	(D) — Day
+6:00 PM – 5:59 AM	(N) — Night
+•	The current date is used, formatted as DD.MM.YYYY.
+Template Structure (Single Lighter)
+text
+MV [Mother Vessel Name]
+Lighter: [Lighter Vessel Name]
+[Master Mobile Number]
+Escort name:
+Escort Mobile:
+[DD.MM.YYYY](D/N)
+Al-Aqsa Security Service
+Template Structure (Multiple Lighters under Same Mother Vessel)
+text
+MV [Mother Vessel Name]
+Lighter: [Lighter Vessel 1]
+[Master Mobile 1]
+Escort Name: 
+Escort Mobile: 
+[DD.MM.YYYY](D/N)
+Al-Aqsa
+
+Lighter: [Lighter Vessel 2]
+[Master Mobile 2]
+Escort Name: 
+Escort Mobile: 
+[DD.MM.YYYY](D/N)
+Al-Aqsa
+4.2 Completed Reply (After Filling In Escort Info)
+Once I manually enter the Escort Name and Escort Mobile, the system generates the complete reply message.
+________________________________________
+4.3 Sample Reply Messages
+Reply for Example 2
+text
+Mv.Atlantic Ocean
+Lighter: Malekul Bahar- 2
+01955765322
+Escort name: Shohel
+Escort Mobile: 01311200508
+13.04.2026(N)
+Al-Aqsa Security Service
+Reply for Example 3 (Multiple Lighters)
+text
+MV GM FORTUNE
+Lighter: Jewel-6
+01827-128225
+Escort Name: Al-Momin
+Escort Mobile: 01861573835
+12.04.2026(N)
+Al-Aqsa
+
+Lighter: Jewel-5
+01627-361015
+Escort Name: Nirob
+Escort Mobile: 01633083171
+12.04.2026(N)
+Al-Aqsa
+Reply for Example 4
+text
+MV UASNEE NAREE
+Lighter: CITY-69
+01939123424
+Escort Name: Rafiq
+Escort Mobile: 01858475272
+12.04.2026(N)
+Al-Aqsa
+Reply for Example 5
+text
+MV Bright Falcon
+Lighter: ST-1
+01321170929
+Escort Name: Rafiq
+Escort Mobile: 01858475272
+12.04.2026(N)
+Al-Aqsa
+________________________________________
+5. DATA RECORDING — PROGRAM DATA SHEET
+5.1 Overview
+After generating the reply message, the extracted and filled data must be saved to a Program Data Sheet (similar to an Excel file I have provided).
+5.2 Required Columns
+Column	Description	Source
+ID	Auto-generated unique ID (if not pre-existing). If ID already exists, a new row is still created.	System
+Mother Vessel	Name of the mother vessel	Parsed from order message
+Lighter Vessel	Name of the lighter vessel	Parsed from order message
+Master Mobile	Lighter vessel master's phone number	Parsed from order message
+Destination / Release Point	Where the lighter is going	Parsed from order message
+Escort Name	Name of assigned escort employee	Manually entered
+Escort Mobile	Mobile number of the escort	Manually entered
+Date	Assignment date	Auto from reply generation
+Day/Night	(D) or (N)	Auto from time of reply
+(Additional columns)	As per the attached Excel file structure	From Excel
+5.3 Data Retrieval / Search
+Records can be fetched/searched by:
+•	ID
+•	Mother Vessel
+•	Employee Name
+•	Lighter Vessel
+•	Release Point
+•	Date
+5.4 Incomplete Records
+The reply message only provides half the data. The record is completed only when the employee is released from the destination point and their food bill and conveyance are processed.
+________________________________________
+6. DUTY COMPLETION & PAYMENT — SEND MONEY SYSTEM
+6.1 Overview
+When an escort employee completes their duty and is released from the destination point, I need to:
+1.	Send money for food bill and conveyance.
+2.	Update the Program Data Sheet (if duty is completed).
+3.	Update the Daily Cash Payment Sheet.
+6.2 Send Money Message Template
+text
+ID: [Employee Mobile/ID]
+[Employee Name]
+[Receiving Mobile Number]([Payment Method])
+[Amount]/-,
+Status: Running/Completed,
+Remarks: [Optional text]
+Where:
+Field	Description
+Employee ID	The employee's mobile number serves as their ID
+Employee Name	Full name of the escort
+Receiving Mobile	The number money is sent to
+Payment Method	(N) = Nagad, (B) = bKash (indicated in parentheses)
+Amount	Amount in BDT
+Status	Running = duty ongoing; Completed = duty finished
+Remarks	Optional notes
+6.3 Update Logic
+Status in Message	Action
+Running	Update Daily Cash Payment Sheet only
+Completed	Update both Program Data Sheet and Daily Cash Payment Sheet (with all column-wise information and applicable calculations)
+________________________________________
+7. SAMPLE PAYMENT MESSAGES & PARSING
+Below are real WhatsApp payment messages for the system to parse:
+Message Set from 13/04/2026
+Timestamp	Raw Message	Parsed Employee	Parsed Receiving Number	Method	Amount
+15:12, 13/04	ID: 01782610995 Sazzad Hossain 01782610995(N) 1000/-	Sazzad Hossain	01782610995	Nagad	1000
+16:29, 13/04	Raju Chorpara 01708314716(B) 600/-	Raju	01708314716	bKash	600
+18:07, 13/04	ID: 01920304886 Mahtab MAX SG 01920304886(B) 1730/-	Mahtab	01920304886	bKash	1730
+19:08, 13/04	ID: 01311200508 Shohel Mongla 01311200508(B) 400/-	Shohel	01311200508	bKash	400
+19:23, 13/04	Tareq Mongla 01770243849(B) 700/-	Tareq	01770243849	bKash	700
+20:02, 13/04	Ahsan 01773055387 (b) 1500/-	Ahsan	01773055387	bKash	1500
+21:05, 13/04	Jolily MAX SG 01927317829(N) 610/-	Jolily	01927317829	Nagad	610
+21:09, 13/04	Md. Nasir SG - +8801318182022 (B) = 200/-	Md. Nasir	01318182022	bKash	200
+21:09, 13/04	Debashish SG - 01891969914 (N) = 200/-	Debashish	01891969914	Nagad	200
+21:09, 13/04	ID: 01786178090 Anis- 01786178090(B) 150/-	Anis	01786178090	bKash	150
+21:09, 13/04	Id: 01871796723 Sumir 01871796723 (B) 1000/-	Sumir	01871796723	bKash	1000
+Notes from Messages
+•	"MAX SG" and "SG" appear to be location/assignment codes (e.g., MAX SG may mean "at MAX location, Sadarghat").
+•	"Mongla", "Chorpara" are destination/release points.
+•	"Khu ku, Raju, New Total: 3" — Additional note indicating 3 escorts currently deployed; this is informational.
+•	Phone numbers with country code prefix +88 should be normalized to local format (remove +88).
+________________________________________
+8. SPECIAL MESSAGES (Non-Data / Informational)
+Some messages are not data entries and should be ignored or flagged:
+Message	Type
+"ভাই, একটা প্রোগ্রাম দেন। ঘাটে একজন বসে আছে।"	Request for new program (Bengali) — Ignore for data
+"ভাই এটা উঠছে যে জাহাজে অনেক দিন..."	Status update / request (Bengali) — Ignore for data
+"Khu ku, Raju, New Total: 3"	Informational note — May log but not process
+________________________________________
+9. SPECIAL CASE — ONGOING ASSIGNMENT STATUS UPDATE
+Message:
+"Mv.Maghna victory 2.p of jalaluddin -01736380994
+Escort Name: Sazzad H. (Labor)
+Escort Mobile: 01782610995
+28.03.2026(D)
+Al-Aqsa
+ভাই এটা উঠছে যে জাহাজে অনেক দিন আজকে যদি নামানোর ব্যবস্থা করতে পারেন তো ভালো হয় অনেকগুলো বিল উঠে যাবে"
+Parsed Data:
+Field	Value
+Mother Vessel	MV Maghna Victory
+Lighter Vessel	P of Jalaluddin-2
+Master Mobile	01736380994
+Escort Name	Sazzad H. (Labor)
+Escort Mobile	01782610995
+Date	28.03.2026
+Shift	(D) — Day
+Status	Still ongoing (employee has been on this vessel for many days)
+Note	Request to release employee so multiple bills can be settled
+________________________________________
+10. TECHNICAL REQUIREMENTS SUMMARY
+10.1 Core Features
+#	Feature	Description
+1	Chat Interface	Paste WhatsApp messages to parse order/payment data
+2	Message Parser	AI/rule-based engine to extract structured data from unstructured messages
+3	Reply Template Generator	Auto-generate reply messages with date, time (D/N), and company name
+4	Program Data Sheet	Excel-like data table for all escort assignments
+5	Daily Cash Payment Sheet	Track all payments sent to employees
+6	Employee Records	Master list of all escort employees with salary tracking
+7	Mother Vessel Records	Group all assignments by Mother Vessel for billing
+8	Search & Filter	By ID, Mother Vessel, Employee, Lighter Vessel, Release Point, Date
+9	Excel Export/Import	Read from and write to Excel format; preserve leading zeros
+10	ID Auto-Generation	Auto-create unique ID if none exists; allow existing IDs to create new rows
+10.2 Data Integrity Rules
+•	Leading zeros in phone numbers and IDs must always be preserved.
+•	Phone numbers with +88 prefix should be normalized to 0-prefix format.
+•	Payment method codes: (N) = Nagad, (B) = bKash (case-insensitive).
+•	Date format: DD.MM.YYYY in reply messages.
+•	Amounts: Parse regardless of formatting (e.g., 1000/-, = 200/-, 1500/-).
+10.3 Sheets / Tables Required
+1.	Program Data Sheet — Full escort assignment records (from attached Excel structure + ID column)
+2.	Daily Cash Payment Sheet — All money sent, with date, employee, amount, method, status
+3.	Employee Master Sheet — Employee name, mobile (ID), salary info
+

@@ -1,0 +1,246 @@
+"""Unit tests — modules/escort_lifecycle"""
+from __future__ import annotations
+
+import pytest
+from unittest.mock import AsyncMock, patch
+from datetime import date
+
+pytestmark = pytest.mark.unit
+
+
+class TestIsReleaseIntent:
+    """Test Bengali/English release keyword detection."""
+
+    @pytest.mark.parametrize("text", [
+        "ডিউটি শেষ",
+        "রিলিজ হয়েছি",
+        "ছুটি দিন",
+        "ভেসেল ছেড়েছি",
+        "release",
+        "duty done",
+        "duty finished",
+        "program completed",
+        "ডিউটি শেষ হয়েছে আলহামদুলিল্লাহ",
+    ])
+    def test_release_keywords_detected(self, text):
+        from modules.escort_lifecycle import is_release_intent
+        assert is_release_intent(text) is True
+
+    @pytest.mark.parametrize("text", [
+        "হাজির আছি",
+        "অগ্রিম লাগবে",
+        "চাকরি করতে চাই",
+        "MV GOLDEN STAR escort lagbe",
+        "hello world",
+    ])
+    def test_non_release_not_detected(self, text):
+        from modules.escort_lifecycle import is_release_intent
+        assert is_release_intent(text) is False
+
+
+class TestCloseProgram:
+    """Test program closure: status update, day_count computation."""
+
+    async def test_close_sets_completed_status(
+        self, test_db_pool, seed_escort_program
+    ):
+        import app.database as db_module
+        db_module._pool = test_db_pool
+
+        from modules.escort_lifecycle import close_program
+
+        program_id = seed_escort_program["program_id"]
+        result = await close_program(
+            program_id=program_id,
+            end_date_v=date(2026, 5, 5),
+            end_shift="D",
+            release_point="Ctg Port",
+            day_count=None,
+            completed_by="8801700000001",
+        )
+
+        async with test_db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT status, day_count FROM wbom_escort_programs WHERE program_id=$1",
+                program_id,
+            )
+        assert row["status"] == "Completed"
+
+    async def test_day_count_computed_correctly(
+        self, test_db_pool, seed_escort_program
+    ):
+        import app.database as db_module
+        db_module._pool = test_db_pool
+
+        from modules.escort_lifecycle import close_program
+
+        program_id = seed_escort_program["program_id"]
+        # program_date = 2026-05-01, end_date = 2026-05-05 → 5 days
+        await close_program(
+            program_id=program_id,
+            end_date_v=date(2026, 5, 5),
+            end_shift="D",
+            release_point="Test Port",
+            day_count=None,
+            completed_by="8801700000001",
+        )
+
+        async with test_db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT day_count FROM wbom_escort_programs WHERE program_id=$1",
+                program_id,
+            )
+        assert row["day_count"] == pytest.approx(5.0)
+
+    async def test_minimum_one_day(
+        self, test_db_pool, seed_escort_program
+    ):
+        """Same start and end date = 1 day (not 0)."""
+        import app.database as db_module
+        db_module._pool = test_db_pool
+
+        from modules.escort_lifecycle import close_program
+
+        program_id = seed_escort_program["program_id"]
+        # Same day release
+        await close_program(
+            program_id=program_id,
+            end_date_v=date(2026, 5, 1),  # same as start
+            end_shift="D",
+            release_point="Test Port",
+            day_count=None,
+            completed_by="8801700000001",
+        )
+
+        async with test_db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT day_count FROM wbom_escort_programs WHERE program_id=$1",
+                program_id,
+            )
+        assert row["day_count"] >= 1.0
+
+    async def test_idempotent_on_already_completed(
+        self, test_db_pool, seed_escort_program
+    ):
+        """Calling close_program twice should not fail."""
+        import app.database as db_module
+        db_module._pool = test_db_pool
+
+        from modules.escort_lifecycle import close_program
+
+        program_id = seed_escort_program["program_id"]
+        await close_program(
+            program_id=program_id,
+            end_date_v=date(2026, 5, 5),
+            end_shift="D",
+            release_point="Ctg",
+            day_count=None,
+            completed_by="8801700000001",
+        )
+        # Second call
+        result = await close_program(
+            program_id=program_id,
+            end_date_v=date(2026, 5, 5),
+            end_shift="D",
+            release_point="Ctg",
+            day_count=None,
+            completed_by="8801700000001",
+        )
+        assert result.get("already_closed") is True
+
+
+class TestAttendanceBackfill:
+    """Test backfill_attendance_for_program()."""
+
+    async def test_backfill_creates_daily_rows(
+        self, test_db_pool, seed_escort_program, seed_employee
+    ):
+        import app.database as db_module
+        db_module._pool = test_db_pool
+
+        from modules.escort_lifecycle import backfill_attendance_for_program
+
+        program_id = seed_escort_program["program_id"]
+        employee_id = seed_employee["employee_id"]
+
+        # Set up program with dates
+        async with test_db_pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE wbom_escort_programs
+                SET start_date='2026-05-01', end_date='2026-05-05',
+                    status='Completed', day_count=5
+                WHERE program_id=$1
+            """, program_id)
+
+        await backfill_attendance_for_program(program_id=program_id)
+
+        async with test_db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM wbom_attendance WHERE employee_id=$1 ORDER BY attendance_date",
+                employee_id,
+            )
+        assert len(rows) == 5, f"Expected 5 attendance rows, got {len(rows)}"
+
+    async def test_backfill_does_not_overwrite_existing_rows(
+        self, test_db_pool, seed_escort_program, seed_employee
+    ):
+        import app.database as db_module
+        db_module._pool = test_db_pool
+
+        from modules.escort_lifecycle import backfill_attendance_for_program
+
+        employee_id = seed_employee["employee_id"]
+        program_id = seed_escort_program["program_id"]
+
+        async with test_db_pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE wbom_escort_programs
+                SET start_date='2026-05-01', end_date='2026-05-03',
+                    status='Completed', day_count=3
+                WHERE program_id=$1
+            """, program_id)
+            # Pre-insert 2026-05-02 with Absent manually
+            await conn.execute("""
+                INSERT INTO wbom_attendance
+                    (employee_id, attendance_date, status, recorded_by)
+                VALUES ($1, '2026-05-02', 'Absent', 'manual')
+            """, employee_id)
+
+        await backfill_attendance_for_program(program_id=program_id)
+
+        async with test_db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT status FROM wbom_attendance WHERE employee_id=$1 AND attendance_date='2026-05-02'",
+                employee_id,
+            )
+        # ON CONFLICT DO NOTHING — manual row preserved
+        assert row["status"] == "Absent"
+
+    async def test_backfill_sets_recorded_by_lifecycle(
+        self, test_db_pool, seed_escort_program, seed_employee
+    ):
+        import app.database as db_module
+        db_module._pool = test_db_pool
+
+        from modules.escort_lifecycle import backfill_attendance_for_program
+
+        program_id = seed_escort_program["program_id"]
+        employee_id = seed_employee["employee_id"]
+
+        async with test_db_pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE wbom_escort_programs
+                SET start_date='2026-05-01', end_date='2026-05-02',
+                    status='Completed'
+                WHERE program_id=$1
+            """, program_id)
+
+        await backfill_attendance_for_program(program_id=program_id)
+
+        async with test_db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT recorded_by FROM wbom_attendance WHERE employee_id=$1",
+                employee_id,
+            )
+        for row in rows:
+            assert row["recorded_by"] == "escort-lifecycle"

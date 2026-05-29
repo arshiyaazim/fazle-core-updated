@@ -65,7 +65,8 @@ async def create_escort_payment_draft(
         if escort_program_id:
             prog = await fetch_one(
                 """SELECT program_id, program_date, mother_vessel, end_date,
-                          completion_time
+                          completion_time, lighter_vessel, master_mobile,
+                          shift, shift_type
                    FROM wbom_escort_programs WHERE program_id = $1""",
                 escort_program_id,
             )
@@ -103,10 +104,37 @@ async def create_escort_payment_draft(
 
         bkash = emp.get("bkash_number") or emp.get("nagad_number") or "?"
 
+        # Phase 7: include full vessel context in draft text
+        vessel_lines = ""
+        if escort_program_id and prog:  # type: ignore[name-defined]
+            lighter = prog.get("lighter_vessel") or ""
+            master_mob = prog.get("master_mobile") or ""
+            prog_date_raw = prog.get("program_date")
+            prog_date_str = (
+                prog_date_raw.strftime("%d %b %Y")
+                if prog_date_raw and hasattr(prog_date_raw, "strftime")
+                else str(prog_date_raw or "")
+            )
+            shift_raw = prog.get("shift") or prog.get("shift_type") or ""
+            shift_label = (
+                "দিন (D)" if str(shift_raw).upper().startswith("D")
+                else "রাত (N)" if str(shift_raw).upper().startswith("N")
+                else shift_raw
+            )
+            vessel_lines = (
+                f"জাহাজ (MV): {prog_name}\n"
+                + (f"লাইটার: {lighter}\n" if lighter else "")
+                + (f"মাস্টার মোবাইল: {master_mob}\n" if master_mob else "")
+                + (f"তারিখ: {prog_date_str}\n" if prog_date_str else "")
+                + (f"শিফট: {shift_label}\n" if shift_label else "")
+            )
+        else:
+            vessel_lines = f"ডিউটি: {prog_name}\n"
+
         draft_text = (
             f"💼 এস্কর্ট পেমেন্ট রিকোয়েস্ট:\n\n"
             f"কর্মী: {emp['employee_name']}\n"
-            f"ডিউটি: {prog_name}\n"
+            f"{vessel_lines}"
             f"দিন: {duty_days:.1f}\n"
             f"প্রত্যাশিত: ৳{expected:,.0f}\n"
             f"অগ্রিম কর্তন: ৳{advances:,.0f}\n"

@@ -53,7 +53,12 @@ async def enqueue(
            RETURNING id""",
         recipient, body, source_bridge, purpose, idempotency_key, meta_json,
     )
-    return row["id"] if row else None
+    qid = row["id"] if row else None
+    if qid:
+        log.info(f"[OUTBOUND_ENQUEUE] id={qid} recipient={recipient} bridge={source_bridge} purpose={purpose} key={idempotency_key} body={body[:60]!r}")
+    else:
+        log.info(f"[OUTBOUND_ENQUEUE] dedup_skip recipient={recipient} key={idempotency_key}")
+    return qid
 
 
 async def pending_count() -> int:
@@ -74,19 +79,23 @@ async def _send_with_bridge(source_bridge: str, recipient: str, body: str) -> No
     client = get_bridge2() if source_bridge == "bridge2" else get_bridge1()
 
     if not client.breaker.allow():
+        log.warning(f"[OUTBOUND_SEND_FAIL] circuit_open bridge={source_bridge} recipient={recipient}")
         raise BridgeSendError(f"circuit_open:{source_bridge}")
 
     if not _outbound_enabled():
         # Stub mode: count as success without hitting network
         client.breaker.record_success()
-        log.info(f"[outbound:stub] would send to {recipient} via {source_bridge}: {body[:60]}")
+        log.info(f"[OUTBOUND_SEND_STUB] bridge={source_bridge} recipient={recipient} body={body[:60]!r}")
         return
 
+    log.info(f"[OUTBOUND_SEND_START] bridge={source_bridge} recipient={recipient} body={body[:60]!r}")
     try:
         await client.send_strict(recipient, body)
         client.breaker.record_success()
-    except BridgeSendError:
+        log.info(f"[OUTBOUND_SEND_SUCCESS] bridge={source_bridge} recipient={recipient}")
+    except BridgeSendError as exc:
         just_opened = client.breaker.record_failure()
+        log.error(f"[OUTBOUND_SEND_FAIL] bridge={source_bridge} recipient={recipient} error={exc}")
         if just_opened:
             await _alert_circuit_open(source_bridge)
         raise

@@ -1,0 +1,203 @@
+Critical recovery report generated at 2026-04-28T09:28:33.981688+00:00
+Window since=unbounded until=unbounded dry_run=False
+Phone backup sources: none
+
+Number: 8801537443173
+Name: Client Max Ahmed
+DB: 28
+Backup: 19
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801537443173.txt (appended=0)
+
+Number: 8801670535255
+Name: Md Nurul Huda Hridoy
+DB: 621
+Backup: 614
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801670535255.txt (appended=0)
+
+Number: 8801708314716
+Name: Chorpara Raju Majhe
+DB: 0
+Backup: 0
+Recovered: 0
+Missing: 0
+Status: Recovery not possible: source data unavailable
+Sources: Recovery not possible: source data unavailable
+Transcript: /home/azim/core/logs/critical/8801708314716.txt (appended=0)
+
+Number: 8801726393424
+Name: Client MAX Shamsul
+DB: 0
+Backup: 0
+Recovered: 0
+Missing: 0
+Status: Recovery not possible: source data unavailable
+Sources: Recovery not possible: source data unavailable
+Transcript: /home/azim/core/logs/critical/8801726393424.txt (appended=0)
+
+Number: 8801757622300
+Name: KH NAHID HASAN
+DB: 53
+Backup: 53
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801757622300.txt (appended=0)
+
+Number: 8801772274173
+Name: My Number
+DB: 6
+Backup: 3
+Recovered: 2
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801772274173.txt (appended=3)
+
+Number: 8801779415282
+Name: somir sutradhar
+DB: 13
+Backup: 8
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801779415282.txt (appended=0)
+
+Number: 8801818989409
+Name: Hasan Travels Towhidul
+DB: 0
+Backup: 0
+Recovered: 0
+Missing: 0
+Status: Recovery not possible: source data unavailable
+Sources: Recovery not possible: source data unavailable
+Transcript: /home/azim/core/logs/critical/8801818989409.txt (appended=0)
+
+Number: 8801826532066
+Name: Karib Ahmed MAX
+DB: 19
+Backup: 19
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801826532066.txt (appended=0)
+
+Number: 8801829366960
+Name: Client Didar Max
+DB: 5
+Backup: 3
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801829366960.txt (appended=0)
+
+Number: 8801836743754
+Name: Escort REZAUL KARIM
+DB: 85
+Backup: 85
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801836743754.txt (appended=0)
+
+Number: 8801844836824
+Name: Mamun Vai Bkash Nagod
+DB: 1895
+Backup: 1880
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801844836824.txt (appended=0)
+
+Number: 8801848144841
+Name: Sajeda
+DB: 29
+Backup: 28
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801848144841.txt (appended=0)
+
+Number: 8801909956433
+Name: Security Shohag
+DB: 11
+Backup: 6
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801909956433.txt (appended=0)
+
+Number: 8801958122301
+Name: Al-Aqsa AK Khan
+DB: 346
+Backup: 346
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801958122301.txt (appended=0)
+
+Number: 8801958122302
+Name: Al-Aqsa Nimtola
+DB: 31
+Backup: 31
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801958122302.txt (appended=0)
+
+Number: 8801958122303
+Name: Operation Jasim
+DB: 2
+Backup: 2
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801958122303.txt (appended=0)
+
+Number: 8801958122311
+Name: Asf Surveillance Force
+DB: 201
+Backup: 201
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801958122311.txt (appended=0)
+
+Number: 8801972694969
+Name: mdzakir01725494969
+DB: 181
+Backup: 159
+Recovered: 0
+Missing: 0
+Status: OK
+Sources: bridge_sqlite
+Transcript: /home/azim/core/logs/critical/8801972694969.txt (appended=0)
+
+Number: 8801999330826
+Name: Client MAX Shakil
+DB: 0
+Backup: 0
+Recovered: 0
+Missing: 0
+Status: Recovery not possible: source data unavailable
+Sources: Recovery not possible: source data unavailable
+Transcript: /home/azim/core/logs/critical/8801999330826.txt (appended=0)

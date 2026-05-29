@@ -30,9 +30,15 @@ _FALLBACK: list[tuple[list[str], str]] = [
         "📲 WhatsApp: 01958 122322",
     ),
     (
-        ["ঠিকানা", "লোকেশন", "address", "অফিস কোথায়", "একে খান", "google map", "কোথায় যাব"],
-        "📍 আমাদের অফিস:\nআল-আকসা সিকিউরিটি সার্ভিস\n"
-        "ভিক্টোরিয়া গেইট, একে খান মোড়, পাহাড়তলী, চট্টগ্রাম\n"
+        ["ঠিকানা", "লোকেশন", "address", "অফিস কোথায়", "কোথায় অফিস",
+         "হেড অফিস কই", "হেড অপিশ কই", "কোথায় যেতে হবে", "কোথায় আসতে হবে",
+         "office address", "office location", "একে খান", "google map",
+         "কোথায় যাব", "অফিসের ঠিকানা", "আগ্রপাড়া", "পাহাড়তলী"],
+        "📍 আমাদের অফিস:\nআল-আকসা সিকিউরিটি অ্যান্ড লজিস্টিকস সার্ভিসেস লিমিটেড\n"
+        "আগ্রপাড়া, ভিক্টোরিয়া গেইট নং ১\n"
+        "খোকনের বিল্ডিং (২য় তলা)\n"
+        "পোস্ট অফিস: উত্তর কাট্টলি, থানা: পাহাড়তলী\n"
+        "চট্টগ্রাম সিটি কর্পোরেশন\n\n"
         "🕘 সকাল ৯টা – বিকাল ৫টা (শুক্রবার বন্ধ)\n"
         "📌 আনুন: NID ফটোকপি + ২ কপি ছবি\n"
         "📲 WhatsApp: 01958 122322",
@@ -44,12 +50,12 @@ _FALLBACK: list[tuple[list[str], str]] = [
         "1️⃣ পূর্ণ নাম\n2️⃣ বয়স\n3️⃣ শিক্ষাগত যোগ্যতা\n"
         "4️⃣ বর্তমান ঠিকানা (জেলাসহ)\n5️⃣ মোবাইল নম্বর\n\n"
         "📲 WhatsApp: 01958 122322\n"
-        "✅ কোনো ভর্তি ফি বা জামানত লাগবে না",
+        "ℹ️ জয়েনিং ফি ৳৩,৫০০ (৬ মাস পর ফেরত) | ফর্ম ফি ৳৩৩০",
     ),
     (
         ["বাটপার", "ভুয়া", "fake", "প্রতারক", "ধোঁকাবাজ", "fraud"],
         "আল-আকসা সিকিউরিটি সার্ভিস একটি নিবন্ধিত প্রতিষ্ঠান।\n"
-        "✅ কোনো ফি বা জামানত নেওয়া হয় না\n"
+        "✅ কোনো ঘুষ বা অতিরিক্ত ফি নেওয়া হয় না\n"
         "✅ বেতন প্রতি মাসে নিয়মিত প্রদান করা হয়\n"
         "📍 ভিক্টোরিয়া গেইট, একে খান মোড়, পাহাড়তলী, চট্টগ্রাম\n"
         "📲 01958 122322 — সরাসরি অফিসে এসে যাচাই করুন।",
@@ -81,19 +87,22 @@ _FALLBACK: list[tuple[list[str], str]] = [
     ),
     (
         ["টাকা লাগবে", "ভর্তি ফি", "জামানত", "joining fee", "deposit", "ট্রেনিং ফি"],
-        "❌ কোনো ভর্তি ফি নেই | ❌ কোনো জামানত নেই\n"
-        "❌ কোনো ট্রেনিং ফি নেই | ❌ কোনো ইউনিফর্ম ফি নেই\n\n"
-        "✅ আল-আকসা সিকিউরিটি সার্ভিস কখনো টাকা চায় না\n"
-        "যদি কেউ আমাদের নামে টাকা চায় — সেটি প্রতারণা।\n"
-        "📲 01958 122322 এ জানান।",
+        "জয়েনিং ফি ৳৩,৫০০ — ঘুষ বা জামানত নয়। ৬ মাস পর ফেরত দেওয়া হয়।\n"
+        "জয়েনের সময় কমপক্ষে ৳১,০০০ + ৳৩৩০ ফর্ম ফি = ৳১,৩৩০।\n"
+        "বাকি মাসে ৳৫০০ করে বেতন থেকে কাটা হয়।\n"
+        "যদি কেউ এর বাইরে টাকা চায় — সেটি প্রতারণা।\n"
+        "📲 01958 122322",
     ),
     (
         ["বেতন কত", "salary", "মাসে কত", "কত পাব", "বেতন কাঠামো"],
-        "💰 বেতন কাঠামো:\n"
-        "🔹 প্রশিক্ষণকাল (৪৫ দিন): ১০,০০০–১৫,০০০ টাকা\n"
-        "🔹 পরে: ১২,০০০–১৮,০০০ টাকা\n"
-        "✔ দক্ষতার উপর বেতন বাড়ে\n"
-        "✔ ভবিষ্যতে পদোন্নতির সুযোগ",
+        "💰 বেতন পদ অনুযায়ী আলাদা:\n\n"
+        "👷 সার্ভে স্কট / এস্কর্ট পদ:\n"
+        "🔹 ট্রেনিং (৪৫ দিন): ৳১০,০০০–১৫,০০০/মাস\n"
+        "🔹 ট্রেনিং পরে: ৳১২,০০০–১৮,০০০ (ডিউটিভিত্তিক)\n\n"
+        "🛡️ সিকিউরিটি গার্ড পদ:\n"
+        "🔹 প্রবেশন (৩ মাস): মোট প্যাকেজ ~৳১৭,০০০/মাস\n"
+        "🔹 স্থায়ী হলে: মোট প্যাকেজ ~৳২৪,৭০০/মাস\n\n"
+        "আপনি কোন পদে আগ্রহী? বিস্তারিত জানাই।",
     ),
     (
         ["বেতন মেরে", "বেতন পাই না", "পাওনা দেয়নি"],
@@ -159,13 +168,38 @@ async def get_reply(text: str, intent: Optional[str] = None) -> Optional[str]:
                 return reply
 
     # 3. Batch 21 — RAG semantic fallback (skip CV-like blobs)
+    # PATCH 3: RAG results are CONTEXT ONLY — LLM generates a clean reply, never raw chunks
     if not is_cv_like:
         try:
             from modules import rag
+            from app.ollama import generate_reply as _llm_reply
             res = await rag.answer(text, k=2, min_score=4.0)
             if res and res.get("top_score", 0) >= 4.0:
-                log.info(f"[KB] RAG match score={res['top_score']}")
-                return res["answer"]
+                raw_context = res.get("answer", "")
+                _POISON_PATTERNS = (
+                    "এআই-এর বিশ্লেষণ", "এআই-এর ইনটেন্ট",
+                    "| :--- |", "chain_of_thought", "Intent)",
+                    "প্রার্থীর মেসেজ", "প্রার্থীর সম্ভাব্য প্রশ্ন",
+                )
+                if any(p in raw_context for p in _POISON_PATTERNS):
+                    src = (res.get("citations") or [{}])[0].get("source", "?")
+                    log.warning(
+                        f"[KB] [RAG_POISON_BLOCKED] analysis text in RAG chunk, "
+                        f"score={res['top_score']}, source={src}"
+                    )
+                else:
+                    # Safe context: let LLM generate a short conversational reply
+                    src = (res.get("citations") or [{}])[0].get("source", "?")
+                    log.info(
+                        f"[KB] [RAG_CONTEXT_LLM] score={res['top_score']} "
+                        f"source={src!r} — generating clean reply via LLM"
+                    )
+                    rag_reply = await _llm_reply(
+                        user_message=text,
+                        intent=intent or "general",
+                        db_context=raw_context,
+                    )
+                    return rag_reply
         except Exception as e:
             log.debug(f"[KB] RAG fallback failed: {e}")
 

@@ -37,6 +37,13 @@ from modules.message_router import process_message, get_primary_admin
 from modules.recruitment_flow import is_recruitment_trigger, get_active_session
 from modules import outbound as outbound_queue
 from modules import scheduler as fazle_scheduler
+from modules.fazle_payroll_engine import start_fpe, stop_fpe
+from modules.fazle_payroll_engine.routes import router as fpe_router
+from modules.escort_roster.routes import router as escort_roster_router
+from modules.admin_employees import router as admin_employees_router
+from modules.admin_transactions import router as admin_transactions_router
+from modules.social_auto_reply import ingest_social_event, start_social_auto_reply, stop_social_auto_reply
+from modules.social_auto_reply.routes import router as social_auto_reply_router
 
 setup_logging()
 log = logging.getLogger("fazle.app")
@@ -51,6 +58,10 @@ BULK_COMPUTE_SEMAPHORE = asyncio.Semaphore(int(os.getenv("PAYROLL_BULK_CONCURREN
 # ── Feature flag: queue-based outbound (B15.9) ─────────────────────────────────
 def _use_outbound_queue() -> bool:
     return os.getenv("USE_OUTBOUND_QUEUE", "true").lower() in ("1", "true", "yes")
+
+
+def _social_auto_reply_single_engine() -> bool:
+    return os.getenv("SOCIAL_AUTO_REPLY_SINGLE_ENGINE", "true").lower() in ("1", "true", "yes")
 
 # ── API Key dependency ─────────────────────────────────────────────────────────
 API_KEY_HEADER = APIKeyHeader(name="X-Internal-Key", auto_error=False)
@@ -93,15 +104,143 @@ async def lifespan(app: FastAPI):
         log.info("[rag] index build scheduled")
     except Exception as e:
         log.warning(f"[rag] startup build failed to schedule: {e}")
+    # FPE — Fazle Payroll Engine (start after DB is ready)
+    try:
+        await start_fpe()
+    except Exception as e:
+        log.warning(f"[fpe] startup failed (non-fatal): {e}")
+    # Social auto-reply backend: schema + worker. Worker stays paused unless enabled by env/API.
+    try:
+        await start_social_auto_reply()
+    except Exception as e:
+        log.warning(f"[social] startup failed (non-fatal): {e}")
+    # Phase 12 — Unified Request Coordination Layer
+    try:
+        from shared.realtime import start_event_bridge
+        start_event_bridge()
+        log.info("[realtime] coordination layer started")
+    except Exception as e:
+        log.warning(f"[realtime] coordination layer startup failed (non-fatal): {e}")
+    # Phase 13A — Distributed Runtime Gateway
+    _gw_node_id = None
+    try:
+        from shared.runtime_gateway import start_gateway as _start_gw
+        import importlib.metadata as _imeta
+        try:
+            _ver = _imeta.version("fazle-system-agent")
+        except Exception:
+            _ver = os.getenv("APP_VERSION", "1.1.0")
+        _gw_node_id = await _start_gw(
+            "fazle-core",
+            role="orchestrator",
+            version=_ver,
+            metadata={"host": os.getenv("HOSTNAME", ""), "port": 8200},
+        )
+        log.info("[gateway] registered node=%s", _gw_node_id)
+    except Exception as e:
+        log.warning(f"[gateway] startup failed (non-fatal): {e}")
+    # Phase 13B — Global Queue Arbitration recovery loop
+    try:
+        from shared.queue_arbiter import start_arbiter_recovery as _start_arbiter
+        await _start_arbiter()
+        log.info("[arbiter] recovery loop started")
+    except Exception as e:
+        log.warning(f"[arbiter] startup failed (non-fatal): {e}")
+    # Phase 13C — Unified Frontend Synchronization monitoring
+    try:
+        from shared.frontend_sync import start_sync_monitoring as _start_sync
+        await _start_sync()
+        log.info("[sync] frontend sync monitor started")
+    except Exception as e:
+        log.warning(f"[sync] startup failed (non-fatal): {e}")
+    # Phase 13D — Multi-Bridge Orchestration layer
+    try:
+        from shared.bridge_orchestrator import start_orchestrator as _start_orch
+        await _start_orch()
+        log.info("[orchestrator] bridge orchestration layer started")
+    except Exception as e:
+        log.warning(f"[orchestrator] startup failed (non-fatal): {e}")
+    # Phase 13E — Self-Healing Runtime
+    try:
+        from shared.self_heal import start_self_healer as _start_sh
+        await _start_sh()
+        log.info("[self_heal] runtime self-healer started")
+    except Exception as e:
+        log.warning(f"[self_heal] startup failed (non-fatal): {e}")
+    # Escort draft cleanup — purge empty junk rows created by failed extractions
+    try:
+        from modules.escort_roster.db import cleanup_empty_drafts, cleanup_junk_drafts
+        _cleanup_result = await cleanup_empty_drafts(min_age_hours=0, actor="startup")
+        if _cleanup_result["deleted"]:
+            log.info(f"[escort_cleanup] startup purged {_cleanup_result['deleted']} empty draft programs")
+        _junk_result = await cleanup_junk_drafts(actor="startup")
+        if _junk_result["deleted"]:
+            log.info(f"[escort_cleanup] startup purged {_junk_result['deleted']} junk draft programs")
+    except Exception as e:
+        log.warning(f"[escort_cleanup] startup cleanup failed (non-fatal): {e}")
     log.info("Fazle Core started")
     yield
     fazle_scheduler.stop_scheduler()
     await outbound_queue.stop_background_worker()
+    # Phase 13E — stop self-healing layer
+    try:
+        from shared.self_heal import stop_self_healer as _stop_sh
+        await _stop_sh()
+    except Exception as e:
+        log.warning(f"[self_heal] shutdown error: {e}")
+    # Phase 13D — stop bridge orchestration layer
+    try:
+        from shared.bridge_orchestrator import stop_orchestrator as _stop_orch
+        await _stop_orch()
+    except Exception as e:
+        log.warning(f"[orchestrator] shutdown error: {e}")
+    # Phase 13C — stop frontend sync monitor
+    try:
+        from shared.frontend_sync import stop_sync_monitoring as _stop_sync
+        await _stop_sync()
+    except Exception as e:
+        log.warning(f"[sync] shutdown error: {e}")
+    # Phase 13B — stop arbiter recovery loop
+    try:
+        from shared.queue_arbiter import stop_arbiter_recovery as _stop_arbiter
+        await _stop_arbiter()
+    except Exception as e:
+        log.warning(f"[arbiter] shutdown error: {e}")
+    # Phase 13A — deregister gateway node on clean shutdown
+    try:
+        from shared.runtime_gateway import stop_gateway as _stop_gw
+        await _stop_gw()
+    except Exception as e:
+        log.warning(f"[gateway] shutdown error: {e}")
+    try:
+        await stop_fpe()
+    except Exception as e:
+        log.warning(f"[fpe] shutdown error: {e}")
+    try:
+        await stop_social_auto_reply()
+    except Exception as e:
+        log.warning(f"[social] shutdown error: {e}")
     await close_db()
     log.info("Fazle Core stopped")
 
 
 app = FastAPI(title="Fazle Core", version="1.0.0", lifespan=lifespan)
+app.include_router(fpe_router)
+app.include_router(escort_roster_router)
+app.include_router(admin_employees_router)   # Phase 18B — Admin Employee CRUD
+app.include_router(admin_transactions_router) # Phase 19 — Admin Transaction CRUD
+app.include_router(social_auto_reply_router)  # Backend social auto-reply queue/admin API
+
+# Phase 12C — Realtime WebSocket endpoint
+from shared.realtime import router as _realtime_router
+app.include_router(_realtime_router)
+
+# Phase 13C — X-State-Version header middleware (additive, non-breaking)
+try:
+    from shared.frontend_sync import StateVersionMiddleware as _SVM
+    app.add_middleware(_SVM)
+except Exception as _e:
+    log.warning("[sync] StateVersionMiddleware not loaded: %s", _e)
 
 
 # ── Batch 22 — observability middleware ───────────────────────────────────────
@@ -328,6 +467,257 @@ async def health_deep():
     return out
 
 
+# ── Phase 13A — Runtime node registry ───────────────────────────────────────
+@app.get("/api/runtime/nodes")
+async def get_runtime_nodes():
+    """
+    List all registered runtime nodes (fazle-core, payroll-engine, escort-roster).
+
+    Returns each node's status, last heartbeat age, active_requests, queue_depth,
+    version, and metadata_json.  Stale nodes (age_s > STALE_THRESHOLD_S) are
+    returned with status='offline' so the dashboard can highlight them.
+
+    No auth required — diagnostic data only, no secrets exposed.
+    """
+    try:
+        from shared.runtime_gateway import get_active_nodes
+        nodes = await get_active_nodes()
+    except Exception as exc:
+        log.warning("[gateway] /api/runtime/nodes error: %s", exc)
+        nodes = []
+    return {
+        "nodes": nodes,
+        "count": len(nodes),
+        "online": sum(1 for n in nodes if n.get("status") == "online"),
+        "ts":     time.time(),
+    }
+
+
+# ── Phase 13B — Dead-letter inspection ───────────────────────────────────────
+@app.get("/api/queue/dead-letters")
+async def get_dead_letter_queue(limit: int = 50, offset: int = 0):
+    """
+    Return dead-letter lease entries for diagnosis.
+
+    Each item contains the lease metadata and the linked message content
+    from fazle_message_queue.  Sorted by most-recent failure first.
+    Use offset for pagination.
+    """
+    try:
+        from shared.queue_arbiter import get_dead_letters, get_dead_letter_count
+        items = await get_dead_letters(limit=limit, offset=offset)
+        total = await get_dead_letter_count()
+    except Exception as exc:
+        log.warning("[arbiter] /api/queue/dead-letters error: %s", exc)
+        items, total = [], 0
+    return {
+        "items":  items,
+        "count":  len(items),
+        "total":  total,
+        "limit":  limit,
+        "offset": offset,
+        "ts":     time.time(),
+    }
+
+
+@app.get("/api/queue/arbiter-metrics")
+async def get_arbiter_metrics_endpoint():
+    """
+    Return in-process arbitration metrics: lease counts, conflicts,
+    dead-letters, retry counts, processing latency (p50/p95).
+    """
+    try:
+        from shared.queue_arbiter import get_arbiter_metrics
+        metrics = get_arbiter_metrics()
+    except Exception as exc:
+        log.warning("[arbiter] /api/queue/arbiter-metrics error: %s", exc)
+        metrics = {}
+    return {"metrics": metrics, "ts": time.time()}
+
+
+# ── Phase 13C — Frontend Synchronization endpoints ───────────────────────────
+
+@app.post("/api/frontend/heartbeat")
+async def frontend_heartbeat(request: Request):
+    """
+    Client reports its current state_version + reconnect_count.
+
+    Body: {client_id: str, state_version: int, reconnect_count?: int}
+
+    Response: {stale: bool, current_version: int, lag: int,
+               backoff_hint_s: int, ts: float}
+
+    Frontend JS should call this every 30 s.  If stale=true the client must
+    re-fetch its data set.  backoff_hint_s tells the client how long to wait
+    before reconnecting a dropped WebSocket connection.
+    """
+    try:
+        body = await request.json()
+        client_id       = str(body.get("client_id") or "anonymous")
+        state_version   = int(body.get("state_version", 0))
+        reconnect_count = int(body.get("reconnect_count", 0))
+        from shared.frontend_sync import register_heartbeat
+        result = await register_heartbeat(client_id, state_version, reconnect_count)
+        return result
+    except Exception as exc:
+        log.warning("[sync] /api/frontend/heartbeat error: %s", exc)
+        return {"stale": False, "current_version": 0, "lag": 0,
+                "backoff_hint_s": 3, "ts": time.time()}
+
+
+@app.get("/api/frontend/sync-stats")
+async def frontend_sync_stats():
+    """
+    Diagnostics for the unified frontend synchronization layer.
+
+    Response: {registered_clients, active_clients, stale_clients,
+               total_reconnects_seen, avg_propagation_latency_ms,
+               propagation_samples, heartbeats_received, events_observed,
+               stale_detected_total, ws: {...}}
+    """
+    try:
+        from shared.frontend_sync import get_sync_diagnostics
+        diag = get_sync_diagnostics()
+    except Exception as exc:
+        log.warning("[sync] /api/frontend/sync-stats error: %s", exc)
+        diag = {}
+    return {**diag, "ts": time.time()}
+
+
+# ── Phase 13D — Bridge orchestration diagnostics ──────────────────────────────
+@app.get("/api/bridges/diagnostics")
+async def bridge_diagnostics():
+    """
+    Health, lag, deduplication, and failover diagnostics for all bridges.
+
+    Response: {bridges: {bridge1: {...}, bridge2: {...}}, orchestrator: {...}}
+    No secrets or credentials are exposed.
+    """
+    try:
+        from shared.bridge_orchestrator import get_bridge_diagnostics
+        diag = await get_bridge_diagnostics()
+    except Exception as exc:
+        log.warning("[orchestrator] /api/bridges/diagnostics error: %s", exc)
+        diag = {}
+    return {**diag, "ts": time.time()}
+
+
+@app.post("/api/bridges/probe")
+async def bridge_probe(_key: str = Depends(require_api_key)):
+    """
+    Trigger an immediate health probe on all bridges (internal use only).
+    Requires X-Internal-Key header.
+    """
+    try:
+        from shared.bridge_orchestrator import probe_all_bridges
+        await probe_all_bridges()
+        from shared.bridge_orchestrator import get_bridge_diagnostics
+        diag = await get_bridge_diagnostics()
+    except Exception as exc:
+        log.warning("[orchestrator] /api/bridges/probe error: %s", exc)
+        diag = {}
+    return {"probed": True, **diag, "ts": time.time()}
+
+
+# ── Phase 13E — Self-Healing Runtime diagnostics ──────────────────────────────
+@app.get("/api/self-heal/diagnostics")
+async def self_heal_diagnostics():
+    """
+    Runtime self-heal status: pressure score, panic mode, signal breakdown,
+    recovery counts, and last 20 audit log entries.
+
+    No auth required — no secrets exposed.
+    """
+    try:
+        from shared.self_heal import get_self_heal_diagnostics
+        return await get_self_heal_diagnostics()
+    except Exception as exc:
+        log.warning("[self_heal] /api/self-heal/diagnostics error: %s", exc)
+        return {"error": str(exc), "ts": time.time()}
+
+
+# ── PATCH 6: RAG index rebuild endpoint ───────────────────────────────────────
+@app.post("/api/rag/rebuild")
+async def rag_rebuild(_key: str = Depends(require_api_key)):
+    """
+    Force a full RAG index rebuild from scratch.
+    Clears the current (potentially poisoned) in-memory index and rebuilds
+    from approved files only (internal/archived files automatically excluded).
+    Requires X-Internal-Key header.
+    """
+    try:
+        from modules import rag
+        stats = await rag.rebuild_index()
+        return {"status": "rebuilt", "stats": stats, "ts": time.time()}
+    except Exception as exc:
+        log.error("[rag] /api/rag/rebuild failed: %s", exc)
+        return {"status": "error", "error": str(exc), "ts": time.time()}
+
+
+@app.get("/api/rag/stats")
+async def rag_stats(_key: str = Depends(require_api_key)):
+    """
+    RAG index stats: doc count, safe/unsafe split, vocab size, source breakdown.
+    Requires X-Internal-Key header.
+    """
+    try:
+        from modules import rag
+        return {"status": "ok", "stats": await rag.stats(), "ts": time.time()}
+    except Exception as exc:
+        log.error("[rag] /api/rag/stats failed: %s", exc)
+        return {"status": "error", "error": str(exc), "ts": time.time()}
+
+
+@app.get("/api/rag/recent-searches")
+async def rag_recent_searches(_key: str = Depends(require_api_key)):
+    """
+    STEP 2: Last 50 RAG search audit records.
+    Returns: query, matched source, score, chunk preview, timestamp, safe flag.
+    Requires X-Internal-Key header. No data persisted — in-memory ring buffer.
+    """
+    try:
+        from modules import rag
+        searches = await rag.recent_searches()
+        return {"status": "ok", "count": len(searches), "searches": searches, "ts": time.time()}
+    except Exception as exc:
+        log.error("[rag] /api/rag/recent-searches failed: %s", exc)
+        return {"status": "error", "error": str(exc), "ts": time.time()}
+
+
+@app.post("/api/self-heal/check")
+async def self_heal_trigger(_key: str = Depends(require_api_key)):
+    """
+    Trigger an immediate self-heal check cycle (internal use only).
+    Returns the full diagnostics snapshot after checks complete.
+    Requires X-Internal-Key header.
+    """
+    try:
+        from shared.self_heal import trigger_check_cycle
+        return await trigger_check_cycle()
+    except Exception as exc:
+        log.warning("[self_heal] /api/self-heal/check error: %s", exc)
+        return {"error": str(exc), "ts": time.time()}
+
+
+# ── Phase 12G — Global state version (frontend poll) ─────────────────────────
+@app.get("/api/state-version")
+async def get_state_version_endpoint():
+    """
+    Returns the current global state version counter.
+
+    Dashboard JS polls this every few seconds and refreshes the current tab
+    only when the version increases — no wasted API calls.
+
+    Response: {"version": 42, "ts": 1234567890.1}
+    """
+    try:
+        from shared.state_version import get_state_version
+        v = await get_state_version()
+    except Exception:
+        v = 0
+    return {"version": v, "ts": time.time()}
+
+
 # ── Meta Webhook Verification (GET) ───────────────────────────────────────────
 @app.get("/webhook/meta")
 async def meta_verify(request: Request):
@@ -344,7 +734,7 @@ async def meta_verify(request: Request):
 # ── Meta Webhook Events (POST) ────────────────────────────────────────────────
 @app.post("/webhook/meta")
 async def meta_webhook(request: Request):
-    """Receive Meta WhatsApp Cloud API events."""
+    """Receive Meta events: WhatsApp Cloud API, Facebook Messenger, and Page comments."""
     body_bytes = await request.body()
 
     # Verify signature
@@ -364,10 +754,25 @@ async def meta_webhook(request: Request):
         raise HTTPException(status_code=400, detail="Bad JSON")
 
     for entry in payload.get("entry", []):
+        # ── Facebook Messenger messages ─────────────────────────────────────
+        for messaging in entry.get("messaging", []):
+            if "message" in messaging and not messaging["message"].get("is_echo"):
+                await _handle_messenger_message(messaging)
+
+        # ── WhatsApp Cloud API + Facebook Page feed (comments) ──────────────
         for change in entry.get("changes", []):
+            field = change.get("field", "")
             value = change.get("value", {})
-            for msg in value.get("messages", []):
-                await _handle_meta_message(msg, value)
+
+            if field == "messages":
+                # WhatsApp Cloud API inbound messages
+                for msg in value.get("messages", []):
+                    await _handle_meta_message(msg, value)
+
+            elif field == "feed":
+                # Facebook Page feed: new public comments
+                if value.get("item") == "comment" and value.get("verb") == "add":
+                    await _handle_fb_comment(value)
 
     return {"status": "ok"}
 
@@ -388,6 +793,28 @@ async def _handle_meta_message(msg: dict, value: dict):
         return
 
     await _save_message("meta", sender, text, direction="inbound")
+
+    try:
+        await ingest_social_event(
+            platform="meta_whatsapp",
+            event_type="message",
+            sender_id=sender,
+            text=text,
+            message_id=msg.get("id"),
+            media_flag=msg_type in ("image", "audio", "document", "video"),
+            raw_payload=msg,
+        )
+    except Exception as e:
+        log.warning(f"[social] meta ingest failed for {sender}: {e}")
+    if _social_auto_reply_single_engine():
+        log.debug(f"[META] social daemon is single reply engine, legacy reply path skipped for {sender}")
+        return
+
+    # Sync-only: Meta is not in auto_reply_sources — save message, skip reply/draft.
+    if "meta" not in settings.auto_reply_source_list:
+        log.debug(f"[META] sync-only, skipping reply/draft for {sender}")
+        return
+
     reply, send_to_admin = await _process_message(sender, text, "meta")
 
     if reply:
@@ -406,6 +833,96 @@ async def _handle_meta_message(msg: dict, value: dict):
     # send_to_admin is a dict: {admin_phone, text, bridge} — used for payment drafts
     if send_to_admin:
         await _notify_admin(send_to_admin)
+
+
+async def _handle_messenger_message(messaging: dict):
+    """Handle Facebook Messenger inbound message — save + recruitment autoreply."""
+    sender_id = messaging.get("sender", {}).get("id", "")
+    text = messaging.get("message", {}).get("text", "").strip()
+    if not sender_id or not text:
+        return
+
+    log.info(f"[MESSENGER] from={sender_id} text={text[:60]!r}")
+    await _save_message("messenger", sender_id, text, direction="inbound")
+
+    try:
+        await ingest_social_event(
+            platform="messenger",
+            event_type="message",
+            sender_id=sender_id,
+            text=text,
+            conversation_id=messaging.get("conversation", {}).get("id"),
+            message_id=messaging.get("message", {}).get("mid"),
+            media_flag=bool(messaging.get("message", {}).get("attachments")),
+            raw_payload=messaging,
+        )
+    except Exception as e:
+        log.warning(f"[social] messenger ingest failed for {sender_id}: {e}")
+    if _social_auto_reply_single_engine():
+        log.debug(f"[MESSENGER] social daemon is single reply engine, legacy reply path skipped for {sender_id}")
+        return
+
+    if "messenger" not in settings.auto_reply_source_list:
+        log.debug(f"[MESSENGER] sync-only, skipping reply for {sender_id}")
+        return
+
+    reply, _ = await _process_message(sender_id, text, "messenger")
+
+    if reply:
+        recruit_gate = (not settings.auto_reply_enabled
+                        and await _should_recruitment_autoreply(sender_id, text))
+        if settings.auto_reply_enabled or recruit_gate:
+            if recruit_gate:
+                log.info(f"[RECRUIT-AUTOREPLY] sending Messenger reply to {sender_id} (SAFE MODE bypass)")
+            ok = await _send_messenger(sender_id, reply)
+            if ok:
+                await _save_message("messenger", sender_id, reply, direction="outbound")
+        else:
+            log.info(f"[MESSENGER] SAFE MODE: reply suppressed for {sender_id}")
+
+
+async def _handle_fb_comment(value: dict):
+    """Handle new Facebook Page comment — save + send a standard recruitment reply."""
+    comment_id = value.get("comment_id", "")
+    sender_name = value.get("sender_name", "Unknown")
+    sender_id = str(value.get("sender_id", ""))
+    text = value.get("message", "").strip()
+    if not comment_id or not text:
+        return
+
+    log.info(f"[FB-COMMENT] from={sender_name}({sender_id}) comment_id={comment_id} text={text[:60]!r}")
+    await _save_message("fb_comment", sender_id or comment_id, text, direction="inbound")
+
+    try:
+        await ingest_social_event(
+            platform="facebook_comment",
+            event_type="comment",
+            sender_id=sender_id,
+            sender_name=sender_name,
+            text=text,
+            conversation_id=str(value.get("post_id") or ""),
+            comment_id=comment_id,
+            parent_id=str(value.get("parent_id") or ""),
+            raw_payload=value,
+        )
+    except Exception as e:
+        log.warning(f"[social] comment ingest failed for {comment_id}: {e}")
+    if _social_auto_reply_single_engine():
+        log.debug(f"[FB-COMMENT] social daemon is single reply engine, legacy reply path skipped for {comment_id}")
+        return
+
+    if "fb_comment" not in settings.auto_reply_source_list:
+        log.debug(f"[FB-COMMENT] sync-only, skipping reply for {comment_id}")
+        return
+
+    # Use a standard recruitment invite reply for page comments
+    recruit_reply = (
+        f"ধন্যবাদ আপনার মন্তব্যের জন্য! আমাদের সিকিউরিটি গার্ড পদে আবেদন করতে "
+        f"অনুগ্রহ করে আমাদের WhatsApp-এ মেসেজ করুন: wa.me/8801958122300"
+    )
+    ok = await _send_fb_comment_reply(comment_id, recruit_reply)
+    if ok:
+        await _save_message("fb_comment", sender_id or comment_id, recruit_reply, direction="outbound")
 
 
 # ── Bridge 1 Webhook ───────────────────────────────────────────────────────────
@@ -435,16 +952,90 @@ async def bridge2_webhook(request: Request):
 async def _handle_bridge_event(payload: dict, source: str):
     events = payload if isinstance(payload, list) else [payload]
     for event in events:
-        sender = event.get("sender") or event.get("from", "")
-        text = event.get("text") or event.get("message", "")
-        if not text or not sender:
+        sender = (
+            event.get("sender")
+            or event.get("from")
+            or event.get("chat_jid")
+            or event.get("chatId")
+            or ""
+        )
+        text = (
+            event.get("text")
+            or event.get("message")
+            or event.get("content")
+            or event.get("processed_text")
+            or ""
+        )
+        sender = str(sender or "").strip()
+        text = str(text or "").strip()
+        media_type = str(event.get("media_type") or event.get("type") or "").strip().lower()
+        if not sender:
+            continue
+        if not text and media_type:
+            text = f"[media:{media_type}]"
+        if not text:
             continue
 
         sender_clean = sender.replace("@s.whatsapp.net", "").replace("+", "")
+
+        # P15-03: Dedup guard — prevent double-processing when webhook fires
+        # alongside the SQLite poller (both paths call process_message).
+        # Keep pre-mark for race protection, but roll back on save failure to avoid no-loss gaps.
+        msg_id = event.get("id") or event.get("message_id", "")
+        pre_marked = False
+        if msg_id:
+            try:
+                from modules.bridge_poller import _is_processed, _mark_processed
+                if await _is_processed(msg_id, source):
+                    log.debug(f"[{source.upper()}] webhook dedup: already processed msg_id={msg_id}")
+                    continue
+                await _mark_processed(msg_id, source, sender_clean)
+                pre_marked = True
+            except Exception as _dedup_err:
+                log.debug(f"[{source.upper()}] dedup check unavailable: {_dedup_err}")
+
         log.info(f"[{source.upper()}] from={sender_clean} text={text[:60]!r}")
 
-        await _save_message(source, sender_clean, text, direction="inbound")
+        try:
+            await _save_message(source, sender_clean, text, direction="inbound")
+        except Exception as _save_err:
+            if msg_id and pre_marked:
+                try:
+                    await execute(
+                        "DELETE FROM processed_bridge_messages WHERE message_id = $1 AND bridge = $2",
+                        msg_id,
+                        source,
+                    )
+                except Exception as _rollback_err:
+                    log.error(
+                        f"[{source.upper()}] dedup rollback failed msg_id={msg_id}: {_rollback_err}"
+                    )
+            log.error(f"[{source.upper()}] inbound save failed for {sender_clean}: {_save_err}")
+            continue
+
         _forward_to_agent_if_admin(sender_clean, text, source)
+
+        try:
+            await ingest_social_event(
+                platform=source,
+                event_type="message",
+                sender_id=sender_clean,
+                text=text,
+                message_id=msg_id or None,
+                media_flag=bool(media_type),
+                raw_payload=event,
+            )
+        except Exception as e:
+            log.warning(f"[social] bridge ingest failed source={source} sender={sender_clean}: {e}")
+        if _social_auto_reply_single_engine():
+            log.debug(f"[{source.upper()}] social daemon is single reply engine, legacy reply path skipped for {sender_clean}")
+            continue
+
+        # Sync-only sources: message is saved, no reply, no draft, no admin notify.
+        if source not in settings.auto_reply_source_list:
+            log.debug(f"[{source.upper()}] sync-only, skipping reply/draft for {sender_clean}")
+            continue
+
         reply, send_to_admin = await _process_message(sender_clean, text, source)
 
         if reply:
@@ -454,7 +1045,12 @@ async def _handle_bridge_event(payload: dict, source: str):
                 if recruit_gate:
                     log.info(f"[RECRUIT-AUTOREPLY] sending to {sender_clean} ({source}) despite SAFE MODE")
                 bridge = get_bridge1() if source == "bridge1" else get_bridge2()
-                await bridge.send(sender, reply)
+                log.info(f"[DIRECT_BRIDGE_SEND_START] source={source} sender={sender_clean} body={reply[:60]!r}")
+                ok = await bridge.send(sender, reply)
+                if ok:
+                    log.info(f"[DIRECT_BRIDGE_SEND_SUCCESS] source={source} sender={sender_clean}")
+                else:
+                    log.error(f"[DIRECT_BRIDGE_SEND_FAIL] source={source} sender={sender_clean}")
                 await _save_message(source, sender_clean, reply, direction="outbound")
             else:
                 log.warning(f"SAFE MODE: reply suppressed for {sender_clean} ({source}).")
@@ -583,6 +1179,27 @@ async def dashboard_spa():
     return FileResponse(os.path.join(os.path.dirname(__file__), "static", "dashboard.html"))
 
 
+@app.get("/payroll", response_class=HTMLResponse)
+async def payroll_spa():
+    """FPE Payroll Engine dashboard SPA."""
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "payroll.html"))
+
+
+@app.get("/payroll/{tab}", response_class=HTMLResponse)
+async def payroll_spa_tab(tab: str):
+    """SPA deep-link routes (overview/transactions/search/employees/unmatched/sync/manual)."""
+    allowed = {"overview", "transactions", "search", "employees", "unmatched", "review", "sync", "manual", "cash", "income"}
+    if tab not in allowed:
+        raise HTTPException(status_code=404, detail="Unknown payroll tab")
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "payroll.html"))
+
+
+@app.get("/escort-roster", response_class=HTMLResponse)
+async def escort_roster_spa():
+    """Escort Roster management SPA."""
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "escort-roster.html"))
+
+
 @app.get("/dashboard/legacy", response_class=HTMLResponse)
 async def dashboard_legacy():
     try:
@@ -676,6 +1293,53 @@ async def _send_meta(to: str, text: str) -> bool:
         return False
 
 
+async def _send_messenger(recipient_id: str, text: str) -> bool:
+    """Send a Facebook Messenger reply via Page Access Token."""
+    if not settings.fb_page_access_token:
+        log.error("[MESSENGER] fb_page_access_token not configured")
+        return False
+    url = f"{settings.meta_api_url}/me/messages"
+    payload = {
+        "recipient": {"id": recipient_id},
+        "message": {"text": text},
+        "messaging_type": "RESPONSE",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(
+                url,
+                json=payload,
+                params={"access_token": settings.fb_page_access_token},
+            )
+            if r.status_code != 200:
+                log.error(f"[MESSENGER] send failed {r.status_code}: {r.text[:200]}")
+            return r.status_code == 200
+    except Exception as e:
+        log.error(f"[MESSENGER] send error: {e}")
+        return False
+
+
+async def _send_fb_comment_reply(comment_id: str, text: str) -> bool:
+    """Reply to a Facebook Page comment via Page Access Token."""
+    if not settings.fb_page_access_token:
+        log.error("[FB-COMMENT] fb_page_access_token not configured")
+        return False
+    url = f"{settings.meta_api_url}/{comment_id}/comments"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(
+                url,
+                params={"access_token": settings.fb_page_access_token},
+                json={"message": text},
+            )
+            if r.status_code != 200:
+                log.error(f"[FB-COMMENT] reply failed {r.status_code}: {r.text[:200]}")
+            return r.status_code == 200
+    except Exception as e:
+        log.error(f"[FB-COMMENT] reply error: {e}")
+        return False
+
+
 async def _save_message(source: str, sender: str, text: str, direction: str):
     try:
         await execute(
@@ -691,10 +1355,37 @@ async def _save_message(source: str, sender: str, text: str, direction: str):
 
 
 async def _save_draft(source: str, recipient: str, reply_text: str, intent: str):
+    # Draft creation kill-switch — when disabled, silently skip.
+    if not settings.draft_creation_enabled:
+        log.debug(f"[draft] creation disabled, skipping source={source} recipient={recipient}")
+        return
+    reply_body = reply_text or ""
+    # Suppress tight-loop duplicates for the same source+recipient+reply text.
+    try:
+        dup = await fetch_one(
+            """
+            SELECT id
+            FROM fazle_draft_replies
+            WHERE source = $1
+              AND recipient = $2
+              AND reply_text = $3
+              AND created_at >= NOW() - INTERVAL '120 seconds'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            source,
+            recipient,
+            reply_body,
+        )
+        if dup:
+            log.info(f"[draft] duplicate suppressed source={source} recipient={recipient} recent_id={dup.get('id')}")
+            return
+    except Exception as e:
+        log.warning(f"[draft] duplicate check error: {e}")
     # B25 hotfix: quality gate — reject path leaks / LLM fallbacks before queueing.
     from modules.draft_quality import check_draft_quality
     from modules import observability as _obs
-    ok, reason = check_draft_quality(reply_text)
+    ok, reason = check_draft_quality(reply_body)
     if not ok:
         _obs.inc("drafts_rejected_total", labels={"reason": reason or "unknown", "source": source})
         log.warning(f"[draft_quality] rejected source={source} recipient={recipient} reason={reason}")
@@ -706,7 +1397,7 @@ async def _save_draft(source: str, recipient: str, reply_text: str, intent: str)
                 VALUES ($1, $2, $3, $4, true, $5, NOW(),
                         jsonb_build_object('quality_reason', $6, 'gate', 'b25'))
                 """,
-                source, recipient, reply_text or "", intent,
+                source, recipient, reply_body, intent,
                 "rejected_fallback" if reason == "llm_fallback" else "rejected_quality",
                 reason or "unknown",
             )
@@ -720,7 +1411,7 @@ async def _save_draft(source: str, recipient: str, reply_text: str, intent: str)
                 (source, recipient, reply_text, intent, draft_only, status, created_at)
             VALUES ($1, $2, $3, $4, true, 'pending', NOW())
             """,
-            source, recipient, reply_text, intent,
+            source, recipient, reply_body, intent,
         )
     except Exception as e:
         log.warning(f"Draft save error: {e}")

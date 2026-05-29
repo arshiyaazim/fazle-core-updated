@@ -1,0 +1,23 @@
+[Unit]
+Description=Fazle Social Auto-Reply Daemon
+After=network-online.target docker.service fazle-core.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=azim
+WorkingDirectory=/home/azim/core
+EnvironmentFile=/home/azim/secure-env-backup/runtime-services.env
+EnvironmentFile=-/home/azim/core/.env
+Environment=SOCIAL_AUTO_REPLY_ENABLED=true
+Environment=SOCIAL_AUTO_REPLY_SINGLE_ENGINE=true
+Environment=SOCIAL_AI_REPLY_ENABLED=true
+Environment=SOCIAL_REPLY_COMPRESSION_S=25
+ExecStart=/home/azim/core/venv/bin/python -m modules.social_auto_reply.service_runner
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/home/azim/core/logs/fazle-social-auto-reply.log
+StandardError=append:/home/azim/core/logs/fazle-social-auto-reply-error.log
+
+[Install]
+WantedBy=multi-user.target

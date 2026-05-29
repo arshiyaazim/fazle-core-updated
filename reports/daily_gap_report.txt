@@ -1,0 +1,47 @@
+Generated: 2026-05-08T01:00:03.032952+00:00
+System status: ok
+
+📊 DAILY GAP REPORT
+
+Total checked: 20
+Warnings: 2
+Critical gaps: 4
+System status: ok
+
+Alerts:
+- Number: 8801537443173
+  Issue: time_gap
+  Gap: 17h 9m
+  Last Msg: 2026-05-06T17:31:40+00:00
+  Severity: critical
+  Note: Previous message at 2026-05-06T00:22:06+00:00 via bridge1.
+- Number: 8801670535255
+  Issue: time_gap
+  Gap: 22h 13m
+  Last Msg: 2026-05-07T10:54:46+00:00
+  Severity: critical
+  Note: Previous message at 2026-05-06T12:40:55+00:00 via bridge2.
+- Number: 8801844836824
+  Issue: time_gap
+  Gap: 5h 32m
+  Last Msg: 2026-05-07T23:30:18+00:00
+  Severity: warning
+  Note: Previous message at 2026-05-07T17:57:22+00:00 via bridge2.
+- Number: 8801848144841
+  Issue: time_gap
+  Gap: 55h 14m
+  Last Msg: 2026-05-07T03:41:12+00:00
+  Severity: critical
+  Note: Previous message at 2026-05-04T20:26:50+00:00 via bridge2.
+- Number: 8801958122301
+  Issue: time_gap
+  Gap: 95h 9m
+  Last Msg: 2026-05-06T09:41:31.252869+00:00
+  Severity: critical
+  Note: Previous message at 2026-05-02T10:31:51.977613+00:00 via meta.
+- Number: 8801972694969
+  Issue: time_gap
+  Gap: 3h 16m
+  Last Msg: 2026-05-07T07:32:24+00:00
+  Severity: warning
+  Note: Previous message at 2026-05-07T04:16:02+00:00 via bridge1.

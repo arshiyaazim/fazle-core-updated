@@ -27,7 +27,7 @@ import math
 import os
 import re
 import time
-from collections import Counter
+from collections import Counter, deque
 from typing import Any, Optional
 
 from app.database import fetch_all
@@ -46,6 +46,40 @@ MIN_TOKEN_LEN = 2
 # BM25 params
 _K1 = 1.5
 _B = 0.75
+
+# ── PATCH 1: Ingestion exclude-lists ──────────────────────────────────────────
+# Directories (relative to RESOURCES_DIR) that must never be indexed
+_EXCLUDED_DIRS: frozenset = frozenset({
+    "_internal_archived", "_internal", "prompts", "debug", "tests",
+    "drafts", "internal", "ai", "training", "examples", "temp",
+})
+# Any filename containing these keywords (case-insensitive) is blocked
+_EXCLUDED_NAME_KEYWORDS: tuple = (
+    "analysis", "prompt", "intent", "debug", "test", "sample",
+    "chain", "reasoning", "internal", "archived",
+)
+# PATCH 3: Backup/temp file guard — substrings that mark non-authoritative files.
+# Blocks *.bak*, *.backup*, *.old*, *.tmp* regardless of whether they end in .txt.
+# Current .bak.20260526-* files are already caught by the endswith(".txt") check;
+# this guard closes the remaining gap (e.g. file.bak.txt, file.backup.txt).
+_EXCLUDED_FILE_PATTERNS: tuple = (
+    ".bak", ".backup", ".old", ".tmp",
+)
+
+# ── PATCH 2: Chunk-level safety patterns ──────────────────────────────────────
+# A chunk containing any of these is NOT safe to send to customers
+_CHUNK_UNSAFE_PATTERNS: tuple = (
+    "এআই-এর বিশ্লেষণ", "এআই-এর ইনটেন্ট", "| :--- |",
+    "chain_of_thought", "Intent)", "প্রার্থীর মেসেজ",
+    "প্রার্থীর সম্ভাব্য প্রশ্ন", "Semantic Analysis", "Tokenization",
+    "RAG pipeline", "LLM pipeline", "prompt template", "OCR raw",
+    "বিশ্লেষণ (Intent)", "reasoning_trace",
+)
+
+
+def _is_chunk_safe(text: str) -> bool:
+    """Return False if this chunk contains internal/analysis content."""
+    return not any(p in text for p in _CHUNK_UNSAFE_PATTERNS)
 
 
 # ── Tokenizer (Unicode-friendly: works for Bangla + Latin) ─────────────────────
@@ -96,18 +130,41 @@ class _Index:
 
 _IDX = _Index()
 
+# ── STEP 2: Recent-searches audit ring buffer (last 50 queries) ───────────────
+_RECENT_SEARCHES: deque = deque(maxlen=50)
+
 
 # ── Source loaders ─────────────────────────────────────────────────────────────
-def _load_resource_files() -> list[tuple[str, str, str]]:
-    """Return list of (source_id, title, text) for each resource file."""
-    out: list[tuple[str, str, str]] = []
+def _load_resource_files() -> list[tuple[str, str, str, bool]]:
+    """Return list of (source_id, title, text, safe_for_customer) for each approved file."""
+    out: list[tuple[str, str, str, bool]] = []
     if not os.path.isdir(RESOURCES_DIR):
         log.warning(f"[rag] resources dir missing: {RESOURCES_DIR}")
         return out
     for name in sorted(os.listdir(RESOURCES_DIR)):
+        path = os.path.join(RESOURCES_DIR, name)
+        # PATCH 1: skip subdirectories — log internal ones
+        if os.path.isdir(path):
+            if name in _EXCLUDED_DIRS or name.startswith("_"):
+                log.info(f"[RAG_FILE_SKIPPED_INTERNAL] dir={name!r} reason=excluded_dir")
+            continue
         if not name.lower().endswith(".txt"):
             continue
-        path = os.path.join(RESOURCES_DIR, name)
+        # PATCH 3: skip backup/temp files by substring pattern
+        name_lower = name.lower()
+        skip_pat = next((p for p in _EXCLUDED_FILE_PATTERNS if p in name_lower), None)
+        if skip_pat:
+            log.info(
+                f"[RAG_FILE_SKIPPED_BACKUP] file={name!r} reason=backup_pattern:{skip_pat}"
+            )
+            continue
+        # PATCH 1: skip files with internal keywords in filename
+        skip_kw = next((kw for kw in _EXCLUDED_NAME_KEYWORDS if kw in name_lower), None)
+        if skip_kw:
+            log.warning(
+                f"[RAG_FILE_SKIPPED_INTERNAL] file={name!r} reason=keyword:{skip_kw}"
+            )
+            continue
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 text = f.read()
@@ -117,13 +174,13 @@ def _load_resource_files() -> list[tuple[str, str, str]]:
         if not text.strip():
             continue
         title = name.rsplit(".", 1)[0]
-        out.append((f"file:{name}", title, text))
+        out.append((f"file:{name}", title, text, True))
     return out
 
 
-async def _load_kb_rows() -> list[tuple[str, str, str]]:
-    """Return list of (source_id, title, text) for KB rows."""
-    out: list[tuple[str, str, str]] = []
+async def _load_kb_rows() -> list[tuple[str, str, str, bool]]:
+    """Return list of (source_id, title, text, safe_for_customer) for KB rows."""
+    out: list[tuple[str, str, str, bool]] = []
     try:
         rows = await fetch_all(
             "SELECT key, COALESCE(category,'') AS category, reply_text "
@@ -137,7 +194,7 @@ async def _load_kb_rows() -> list[tuple[str, str, str]]:
         title = f"{key} ({r.get('category') or 'kb'})"
         text = r.get("reply_text") or ""
         if text.strip():
-            out.append((f"kb:{key}", title, text))
+            out.append((f"kb:{key}", title, text, True))  # KB rows are admin-curated
     return out
 
 
@@ -148,15 +205,26 @@ async def build_index() -> dict[str, Any]:
         t0 = time.monotonic()
         _IDX.reset()
 
-        sources: list[tuple[str, str, str]] = []
+        sources: list[tuple[str, str, str, bool]] = []
         sources.extend(_load_resource_files())
         sources.extend(await _load_kb_rows())
 
-        for source_id, title, text in sources:
+        unsafe_count = 0
+        for source_id, title, text, source_safe in sources:
             for idx, chunk in enumerate(_chunk_text(text)):
                 tokens = _tokenize(chunk)
                 if not tokens:
                     continue
+                # PATCH 2 + STEP 1: Unsafe chunks are PURGED from the index entirely.
+                # They are counted for logging but never stored — unsafe_docs=0 guaranteed.
+                chunk_safe = source_safe and _is_chunk_safe(chunk)
+                if not chunk_safe:
+                    unsafe_count += 1
+                    log.warning(
+                        f"[RAG_CHUNK_PURGED] source={source_id!r} chunk_idx={idx} "
+                        f"— unsafe chunk excluded from index entirely"
+                    )
+                    continue  # STEP 1: do NOT store in _IDX.docs
                 _IDX.docs.append({
                     "source": source_id,
                     "title": title,
@@ -164,6 +232,7 @@ async def build_index() -> dict[str, Any]:
                     "text": chunk,
                     "tokens": tokens,
                     "len": len(tokens),
+                    "safe_for_customer": True,  # guaranteed: unsafe chunks never stored
                 })
 
         # document frequencies
@@ -175,8 +244,10 @@ async def build_index() -> dict[str, Any]:
         )
         _IDX.built_at = time.time()
         _IDX.build_ms = int((time.monotonic() - t0) * 1000)
+        safe_count = sum(1 for d in _IDX.docs if d.get("safe_for_customer", True))
         log.info(
-            f"[rag] index built docs={len(_IDX.docs)} vocab={len(_IDX.df)} "
+            f"[rag] index built docs={len(_IDX.docs)} safe={safe_count} "
+            f"unsafe={unsafe_count} vocab={len(_IDX.df)} "
             f"avgdl={_IDX.avgdl:.1f} in {_IDX.build_ms}ms"
         )
         return await _stats_locked()
@@ -216,6 +287,9 @@ async def search(q: str, k: int = 5, min_score: float = 0.0) -> list[dict[str, A
     n_docs = len(_IDX.docs)
     scored = []
     for d in _IDX.docs:
+        # PATCH 2: only score chunks tagged as safe for customers
+        if not d.get("safe_for_customer", True):
+            continue
         s = _bm25_score(q_tokens, d, n_docs)
         if s > min_score:
             scored.append((s, d))
@@ -229,6 +303,27 @@ async def search(q: str, k: int = 5, min_score: float = 0.0) -> list[dict[str, A
             "chunk_idx": d["chunk_idx"],
             "text": d["text"],
         })
+    # PATCH 7: source traceability — log every search with top hit details
+    if out:
+        _q_repr = repr(q[:80])
+        log.info(
+            f"[RAG_SEARCH] q={_q_repr} hits={len(out)} "
+            f"top_score={out[0]['score']} source={out[0]['source']!r} "
+            f"chunk={out[0]['chunk_idx']} title={out[0]['title']!r}"
+        )
+    else:
+        _q_repr = repr(q[:80])
+        log.debug(f"[RAG_SEARCH] q={_q_repr} hits=0 min_score={min_score}")
+    # STEP 2: append to recent-searches ring buffer for incident debugging
+    _RECENT_SEARCHES.append({
+        "ts": time.time(),
+        "query": q[:100],
+        "hits": len(out),
+        "top_score": out[0]["score"] if out else None,
+        "top_source": out[0]["source"] if out else None,
+        "chunk_preview": out[0]["text"][:80] if out else None,
+        "safe": True,  # STEP 1 guarantees only safe chunks are indexed
+    })
     return out
 
 
@@ -253,12 +348,20 @@ async def answer(q: str, k: int = 3, min_score: float = 1.0) -> Optional[dict[st
 # ── Stats ──────────────────────────────────────────────────────────────────────
 async def _stats_locked() -> dict[str, Any]:
     by_source: Counter = Counter()
+    safe_count = 0
+    unsafe_count = 0
     for d in _IDX.docs:
         by_source[d["source"].split(":", 1)[0]] += 1
+        if d.get("safe_for_customer", True):
+            safe_count += 1
+        else:
+            unsafe_count += 1
     return {
         "built_at": _IDX.built_at,
         "build_ms": _IDX.build_ms,
         "docs": len(_IDX.docs),
+        "safe_docs": safe_count,
+        "unsafe_docs": unsafe_count,
         "vocab": len(_IDX.df),
         "avgdl": round(_IDX.avgdl, 2),
         "by_source_kind": dict(by_source),
@@ -271,3 +374,16 @@ async def stats() -> dict[str, Any]:
     await ensure_index()
     async with _IDX.lock:
         return await _stats_locked()
+
+
+async def rebuild_index() -> dict[str, Any]:
+    """PATCH 6: Force full index rebuild from scratch. Clears any poisoned in-memory index."""
+    log.warning("[rag] [RAG_REBUILD] Forced index rebuild requested — clearing poisoned index")
+    async with _IDX.lock:
+        _IDX.reset()  # wipe current (potentially poisoned) index
+    return await build_index()
+
+
+async def recent_searches() -> list[dict]:
+    """STEP 2: Return last 50 RAG search audit records for incident debugging."""
+    return list(_RECENT_SEARCHES)

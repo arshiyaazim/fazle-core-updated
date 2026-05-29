@@ -585,7 +585,7 @@ async def _cmd_edit(draft_id: int, new_text: str, admin_phone: str) -> str:
     """Edit draft reply text."""
     try:
         row = await fetch_one(
-            "SELECT id FROM fazle_draft_replies WHERE id = $1", draft_id
+            "SELECT * FROM fazle_draft_replies WHERE id = $1", draft_id
         )
         if not row:
             return f"❌ Draft #{draft_id} পাওয়া যায়নি।"
@@ -594,6 +594,18 @@ async def _cmd_edit(draft_id: int, new_text: str, admin_phone: str) -> str:
             "UPDATE fazle_draft_replies SET reply_text=$1, status='edited', admin_phone=$2 WHERE id=$3",
             new_text, admin_phone, draft_id,
         )
+
+        # Persist admin-corrected reply for future reuse (non-fatal if it fails)
+        try:
+            from modules import reviewed_reply_memory as _rrm
+            await _rrm.create_or_update_from_edit(
+                draft_row=dict(row),
+                new_text=new_text,
+                admin_phone=admin_phone,
+            )
+        except Exception as _rrm_err:
+            log.debug("[admin_cmd] reviewed_reply_memory store non-fatal: %s", _rrm_err)
+
         return f"✏️ Draft #{draft_id} আপডেট করা হয়েছে।\n\nনতুন বার্তা:\n{new_text[:300]}"
     except Exception as e:
         log.error(f"[admin_cmd] edit error: {e}")

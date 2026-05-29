@@ -244,7 +244,16 @@ async def ingest_payment_sms(
     parsed = parse_payment_sms(text)
     if not parsed:
         return {"ok": False, "status": "unparsed", "reason": "Could not parse SMS"}
+    return await _ingest_parsed(parsed, sender_number, message_id, auto_finalize)
 
+
+async def _ingest_parsed(
+    parsed: dict,
+    sender_number: Optional[str] = None,
+    message_id: Optional[int] = None,
+    auto_finalize: bool = True,
+) -> dict:
+    """Shared ingest core — called by ingest_payment_sms and ingest_admin_cash_entry."""
     eid, ratio, mtype = await match_employee(parsed["mobile"], parsed.get("name"))
 
     idem = _idempotency_key(
@@ -372,3 +381,53 @@ def looks_like_payment_sms(text: str) -> bool:
     t = text.lower()
     hits = sum(1 for h in _PAYMENT_HINTS if h in t)
     return hits >= 1 and bool(re.search(r"\d{4,}", text))
+
+
+# ── Admin cash shorthand: "Saiful op +880 1849-258074(N) 305/-" ──────────────
+
+_SHORTHAND_RE = re.compile(
+    r"(\+?880[\s\-]?(?:\d[\d\s\-]{8,12})|0?1[3-9]\d{8})"
+    r"\s*\(\s*([NBCRnbcr])\s*\)"
+    r"[\s,]*"
+    r"([\d,]+)\s*/-",
+    re.IGNORECASE,
+)
+_SHORTHAND_METHOD: dict[str, str] = {
+    "n": "nagad", "b": "bkash", "c": "cash", "r": "rocket",
+}
+
+
+def is_admin_cash_shorthand(text: str) -> bool:
+    """Return True if text matches the accountant cash shorthand format."""
+    return bool(_SHORTHAND_RE.search(text))
+
+
+def parse_admin_cash_shorthand(text: str) -> Optional[dict]:
+    """
+    Parse shorthand like "Saiful op +880 1849-258074(N) 305/-" into a parsed dict.
+    Returns None if the pattern is not matched or required fields are missing.
+    """
+    m = _SHORTHAND_RE.search(text)
+    if not m:
+        return None
+    phone = _norm_mobile(m.group(1))
+    method = _SHORTHAND_METHOD.get(m.group(2).lower(), "cash")
+    amount = _amount(m.group(3))
+    if not phone or not amount:
+        return None
+    name_raw = text[: m.start()].strip().strip(",;")
+    name = name_raw if 2 <= len(name_raw) <= 60 else None
+    return {"amount": amount, "mobile": phone, "name": name, "method": method, "trxid": None}
+
+
+async def ingest_admin_cash_entry(
+    text: str,
+    sender_number: Optional[str] = None,
+) -> dict:
+    """
+    Parse an admin cash shorthand message and stage it via the shared ingest core.
+    """
+    parsed = parse_admin_cash_shorthand(text)
+    if not parsed:
+        return {"ok": False, "status": "unparsed", "reason": "Could not parse cash shorthand"}
+    return await _ingest_parsed(parsed, sender_number, None, True)

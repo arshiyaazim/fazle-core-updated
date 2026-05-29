@@ -307,6 +307,43 @@ async def job_backup_staleness() -> dict:
     return {"status": "ok", "newest_age_h": newest_age_h, "alerted": True}
 
 
+async def job_combined_draft_cleanup() -> dict:
+    """P15-01/P15-02 — hourly: expire draft entries older than 24h (escort + payment)."""
+    results: dict = {"status": "ok"}
+
+    # Escort roster drafts
+    try:
+        from modules.escort_roster.db import expire_stale_drafts
+        escort_result = await expire_stale_drafts(hours=24, actor="scheduler")
+        results["escort"] = escort_result
+    except Exception as e:
+        log.warning(f"[scheduler] combined_draft_cleanup escort error: {e}")
+        results["escort"] = {"error": str(e)}
+
+    # Payment drafts
+    try:
+        from app.database import fetch_val as _fetch_val
+        deleted: int = await _fetch_val(
+            """
+            WITH expired AS (
+                DELETE FROM fazle_payment_drafts
+                WHERE status = 'pending'
+                  AND created_at < NOW() - INTERVAL '24 hours'
+                RETURNING id
+            )
+            SELECT count(*) FROM expired
+            """,
+        )
+        if deleted:
+            log.info("[scheduler] combined_draft_cleanup: deleted %d stale payment drafts", deleted)
+        results["payment_deleted"] = deleted
+    except Exception as e:
+        log.warning("[scheduler] combined_draft_cleanup payment error: %s", e)
+        results["payment_error"] = str(e)
+
+    return results
+
+
 # ── Lifespan API ──────────────────────────────────────────────────────────────
 def start_scheduler() -> Optional[AsyncIOScheduler]:
     global _scheduler
@@ -322,6 +359,7 @@ def start_scheduler() -> Optional[AsyncIOScheduler]:
     register_job("stale_escort_reminder", job_stale_escort_reminder)
     register_job("payment_reconciliation", job_payment_reconciliation)
     register_job("backup_staleness_alert", job_backup_staleness)
+    register_job("combined_draft_cleanup", job_combined_draft_cleanup)
 
     # Batch 17 — daily admin digest
     try:
@@ -339,32 +377,108 @@ def start_scheduler() -> Optional[AsyncIOScheduler]:
 
     _scheduler = AsyncIOScheduler(timezone=_tz())
 
+    def _wrap(name: str, fn: Callable[[], Awaitable[dict]]):
+        """Return a proper async callable for APScheduler (lambda returns unawaited coro)."""
+        async def _job():
+            return await _run_wrapped(name, fn)
+        _job.__name__ = f"sched_{name}"
+        return _job
+
     payroll_hour = int(os.getenv("PAYROLL_AUTO_COMPUTE_HOUR", "2"))
     dlq_min = int(os.getenv("DLQ_ALERT_INTERVAL_MIN", "15"))
 
-    _scheduler.add_job(lambda: _run_wrapped("daily_payroll_compute", job_daily_payroll),
+    _scheduler.add_job(_wrap("daily_payroll_compute", job_daily_payroll),
                        CronTrigger(hour=payroll_hour, minute=0),
                        id="daily_payroll_compute", replace_existing=True)
-    _scheduler.add_job(lambda: _run_wrapped("dlq_alert", job_dlq_alert),
+    _scheduler.add_job(_wrap("dlq_alert", job_dlq_alert),
                        IntervalTrigger(minutes=dlq_min),
                        id="dlq_alert", replace_existing=True)
-    _scheduler.add_job(lambda: _run_wrapped("health_summary", job_health_summary),
+    _scheduler.add_job(_wrap("health_summary", job_health_summary),
                        IntervalTrigger(hours=6),
                        id="health_summary", replace_existing=True)
-    _scheduler.add_job(lambda: _run_wrapped("stale_escort_reminder", job_stale_escort_reminder),
+    _scheduler.add_job(_wrap("stale_escort_reminder", job_stale_escort_reminder),
                        CronTrigger(hour=9, minute=0),
                        id="stale_escort_reminder", replace_existing=True)
-    _scheduler.add_job(lambda: _run_wrapped("payment_reconciliation", job_payment_reconciliation),
+    _scheduler.add_job(_wrap("payment_reconciliation", job_payment_reconciliation),
                        IntervalTrigger(hours=1),
                        id="payment_reconciliation", replace_existing=True)
-    _scheduler.add_job(lambda: _run_wrapped("backup_staleness_alert", job_backup_staleness),
+    _scheduler.add_job(_wrap("backup_staleness_alert", job_backup_staleness),
                        CronTrigger(hour=3, minute=0),
                        id="backup_staleness_alert", replace_existing=True)
+    _scheduler.add_job(_wrap("combined_draft_cleanup", job_combined_draft_cleanup),
+                       IntervalTrigger(hours=1),
+                       id="combined_draft_cleanup", replace_existing=True)
+
+    # Shared processing-lock cleanup (Phase 1 unification)
+    try:
+        from shared.locks import cleanup_expired_locks as _cleanup_locks
+        async def job_lock_cleanup() -> dict:
+            n = await _cleanup_locks()
+            return {"status": "ok", "deleted": n}
+        register_job("lock_cleanup", job_lock_cleanup)
+        _scheduler.add_job(
+            _wrap("lock_cleanup", _job_registry["lock_cleanup"]),
+            IntervalTrigger(minutes=5),
+            id="lock_cleanup", replace_existing=True,
+        )
+    except Exception as e:
+        log.warning(f"[scheduler] lock_cleanup job unavailable: {e}")
+
+    # Draft TTL expiry — mark pending drafts as 'expired' after 24 h (configurable)
+    try:
+        from shared.draft import expire_stale_drafts as _expire_drafts
+        from app.config import get_settings as _get_settings
+
+        async def job_draft_ttl_cleanup() -> dict:
+            ttl = _get_settings().draft_ttl_hours
+            n = await _expire_drafts(ttl_hours=ttl)
+            return {"status": "ok", "expired": n, "ttl_hours": ttl}
+
+        register_job("draft_ttl_cleanup", job_draft_ttl_cleanup)
+        _scheduler.add_job(
+            _wrap("draft_ttl_cleanup", _job_registry["draft_ttl_cleanup"]),
+            IntervalTrigger(minutes=30),
+            id="draft_ttl_cleanup", replace_existing=True,
+        )
+    except Exception as e:
+        log.warning(f"[scheduler] draft_ttl_cleanup job unavailable: {e}")
+
+    # Bridge watchdog — alert admin when a bridge has gone silent
+    try:
+        from shared.queue import get_stale_bridges as _stale_bridges
+
+        async def job_bridge_watchdog() -> dict:
+            stale = await _stale_bridges(stale_minutes=10)
+            if stale:
+                labels = [f"{b['bridge_id']}({b['seconds_ago']}s)" for b in stale]
+                log.warning(f"[watchdog] stale bridges: {', '.join(labels)}")
+                # Best-effort: try to send an alert via message_router if available
+                try:
+                    from modules.message_router import get_primary_admin, send_to_admin
+                    admin = get_primary_admin()
+                    if admin:
+                        msg = "Bridge alert - stale:\n" + "\n".join(
+                            f"  {b['bridge_id']}: last seen {b['seconds_ago']//60} min ago"
+                            for b in stale
+                        )
+                        await send_to_admin(msg)
+                except Exception:
+                    pass  # watchdog must not crash if router is unavailable
+            return {"status": "ok", "stale_count": len(stale)}
+
+        register_job("bridge_watchdog", job_bridge_watchdog)
+        _scheduler.add_job(
+            _wrap("bridge_watchdog", _job_registry["bridge_watchdog"]),
+            IntervalTrigger(minutes=5),
+            id="bridge_watchdog", replace_existing=True,
+        )
+    except Exception as e:
+        log.warning(f"[scheduler] bridge_watchdog job unavailable: {e}")
 
     if "daily_admin_digest" in _job_registry:
         digest_hour = int(os.getenv("DAILY_DIGEST_HOUR", "8"))
         _scheduler.add_job(
-            lambda: _run_wrapped("daily_admin_digest", _job_registry["daily_admin_digest"]),
+            _wrap("daily_admin_digest", _job_registry["daily_admin_digest"]),
             CronTrigger(hour=digest_hour, minute=0),
             id="daily_admin_digest", replace_existing=True,
         )
@@ -373,7 +487,7 @@ def start_scheduler() -> Optional[AsyncIOScheduler]:
         b_hour = int(os.getenv("DAILY_BACKUP_HOUR", "2"))
         b_min = int(os.getenv("DAILY_BACKUP_MIN", "30"))
         _scheduler.add_job(
-            lambda: _run_wrapped("daily_db_backup", _job_registry["daily_db_backup"]),
+            _wrap("daily_db_backup", _job_registry["daily_db_backup"]),
             CronTrigger(hour=b_hour, minute=b_min),
             id="daily_db_backup", replace_existing=True,
         )
