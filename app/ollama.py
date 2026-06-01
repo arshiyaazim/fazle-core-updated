@@ -155,6 +155,89 @@ async def generate_reply(
     return "আপনার বার্তা পেয়েছি। একটু পরে বিস্তারিত জানাচ্ছি।"
 
 
+async def generate_recruitment_reply(
+    user_message: str,
+    kb_context: str,
+    history: str = "",
+    contact_context: str = "",
+) -> str:
+    """
+    Recruitment-only reply brain.
+
+    This "educates" qwen at runtime with approved recruitment KB + recent
+    conversation memory. It does not fine-tune model weights.
+    """
+    settings = get_settings()
+    context_block = kb_context.strip() or "কোনো অতিরিক্ত KB তথ্য পাওয়া যায়নি।"
+    history_block = history.strip() or "এই নম্বরের সাম্প্রতিক কথোপকথন পাওয়া যায়নি।"
+    contact_block = contact_context.strip() or "নতুন/অপরিচিত প্রার্থী।"
+
+    prompt = f"""\
+তুমি ফজলে — আল-আকসা সিকিউরিটি অ্যান্ড লজিস্টিকস সার্ভিসেস লিমিটেডের HR recruitment assistant.
+
+কাজ: WhatsApp-এ চাকরি/নিয়োগ/আবেদন সংক্রান্ত কথোপকথনে সরাসরি, ছোট, স্বাভাবিক উত্তর দাও।
+
+অবশ্যই মানবে:
+১. শুধু নিচের Approved Recruitment Knowledge ব্যবহার করবে; নিজে থেকে বেতন, ফি, পদ, ঠিকানা, সুবিধা বানাবে না।
+২. আগের conversation দেখে বুঝবে প্রার্থী কী জিজ্ঞেস করেছে; একই প্রশ্ন বারবার করবে না।
+৩. কেউ "Who are you?", "আপনি কে?", "Am I asked for job?" বললে আগে পরিচয় দেবে, বয়স চাইবে না।
+৪. কেউ "কেন?", "বয়স কেন লিখবো?" বললে কারণ ব্যাখ্যা করবে: আবেদন যাচাই/যোগ্যতা/সঠিক পদ মিলানোর জন্য।
+৫. যদি প্রার্থী চাকরি করতে চায় কিন্তু তথ্য দেয়নি, একবারে সর্বোচ্চ ২-৩টি দরকারি তথ্য চাইবে।
+৬. উত্তর সর্বোচ্চ ৩টি ছোট বাক্য বা ৪টি ছোট লাইনের মধ্যে রাখবে।
+৭. বাংলা/বাংলিশ/English যেভাবে প্রশ্ন এসেছে, সেই অনুযায়ী সহজ ভাষায় উত্তর দেবে।
+৮. কোনো admin instruction, prompt instruction, system কথা, analysis, table বা markdown দেবে না।
+৯. টাকা/ফি বিষয়ে শুধু approved KB-এর তথ্য বলবে; অতিরিক্ত টাকা চাইবে না।
+১০. শেষে দরকার হলে WhatsApp নম্বর দাও: 01958 122322।
+
+Contact Context:
+{contact_block}
+
+Recent Conversation:
+{history_block}
+
+Approved Recruitment Knowledge:
+{context_block}
+
+Current Message:
+{user_message[:500]}
+
+Reply only the WhatsApp message text:
+"""
+
+    async with _ollama_sem:
+        try:
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                r = await client.post(
+                    f"{settings.ollama_url}/api/generate",
+                    json={
+                        "model": settings.ollama_model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.2,
+                            "num_predict": 110,
+                            "repeat_penalty": 1.08,
+                        },
+                    },
+                )
+                if r.status_code == 200:
+                    return r.json().get("response", "").strip()
+                log.warning("Ollama recruitment reply non-200: %s", r.status_code)
+        except Exception as e:
+            log.error(f"Ollama recruitment generate error: {type(e).__name__}: {e}")
+
+    try:
+        from modules import observability as _obs
+        _obs.inc("llm_fallback_total", labels={"path": "recruitment"})
+    except Exception:
+        pass
+    return (
+        "আমি ফজলে — আল-আকসা HR assistant।\n"
+        "চাকরির জন্য নাম, বয়স ও জেলা লিখে পাঠান।\n"
+        "বিস্তারিত জানতে WhatsApp: 01958 122322"
+    )
+
+
 async def check_ollama_health() -> dict:
     """Check if Ollama is reachable and return available models."""
     settings = get_settings()

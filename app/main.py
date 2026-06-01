@@ -63,6 +63,45 @@ def _use_outbound_queue() -> bool:
 def _social_auto_reply_single_engine() -> bool:
     return os.getenv("SOCIAL_AUTO_REPLY_SINGLE_ENGINE", "true").lower() in ("1", "true", "yes")
 
+
+async def _force_draft_by_saved_contact_name(sender_clean: str) -> bool:
+    """Hard safety gate: if saved contact display_name matches configured tokens, force draft."""
+    try:
+        if sender_clean in settings.draft_always_phone_set:
+            return True
+        # Match against saved display_name in wbom_contacts (whatsapp platform).
+        # Token rules:
+        # - contains any `draft_always_names` substring OR
+        # - startswith any `draft_name_prefixes`
+        from app.database import fetch_one
+
+        variants = [sender_clean]
+        if sender_clean.startswith("880") and len(sender_clean) >= 13:
+            variants.append("0" + sender_clean[3:])
+        elif sender_clean.startswith("01") and len(sender_clean) == 11:
+            variants.append("880" + sender_clean[1:])
+
+        contact = None
+        for v in variants:
+            contact = await fetch_one(
+                "SELECT display_name FROM wbom_contacts WHERE whatsapp_number = $1 AND platform='whatsapp' LIMIT 1",
+                v,
+            )
+            if contact:
+                break
+        if not contact:
+            return False
+        name_lower = (contact.get("display_name") or "").lower()
+        for token in settings.draft_always_name_list:
+            if token and token in name_lower:
+                return True
+        for prefix in settings.draft_name_prefix_list:
+            if prefix and name_lower.startswith(prefix):
+                return True
+        return False
+    except Exception:
+        return False
+
 # ── API Key dependency ─────────────────────────────────────────────────────────
 API_KEY_HEADER = APIKeyHeader(name="X-Internal-Key", auto_error=False)
 
@@ -404,7 +443,7 @@ async def _build_health(deep: bool = False) -> dict:
         _probe_heartbeat("bridge_poller:bridge2"),
         return_exceptions=False,
     )
-    bridge1_db = _probe_file_age("/home/azim/whatsapp-mcp/whatsapp-bridge/store/messages.db", "bridge1")
+    bridge1_db = _probe_file_age("/home/azim/whatsapp1/store/messages.db", "bridge1")
     bridge2_db = _probe_file_age("/home/azim/whatsapp2/store/messages.db", "bridge2")
     disk_p = _probe_disk()
     mem_p = _probe_mem()
@@ -821,10 +860,15 @@ async def _handle_meta_message(msg: dict, value: dict):
         recruit_gate = (not settings.auto_reply_enabled
                         and await _should_recruitment_autoreply(sender, text))
         if settings.auto_reply_enabled or recruit_gate:
-            if recruit_gate:
-                log.info(f"[RECRUIT-AUTOREPLY] sending to {sender} (meta) despite SAFE MODE")
-            await _send_meta(sender, reply)
-            await _save_message("meta", sender, reply, direction="outbound")
+            if await _force_draft_by_saved_contact_name(sender):
+                log.info(f"[META] forced draft by saved contact name policy for {sender}")
+                intent = classify(text)
+                await _save_draft("meta", sender, reply, intent)
+            else:
+                if recruit_gate:
+                    log.info(f"[RECRUIT-AUTOREPLY] sending to {sender} (meta) despite SAFE MODE")
+                await _send_meta(sender, reply)
+                await _save_message("meta", sender, reply, direction="outbound")
         else:
             log.warning(f"SAFE MODE: reply suppressed for {sender} (meta). Saving draft.")
             intent = classify(text)
@@ -1042,6 +1086,11 @@ async def _handle_bridge_event(payload: dict, source: str):
             recruit_gate = (not settings.auto_reply_enabled
                             and await _should_recruitment_autoreply(sender_clean, text))
             if settings.auto_reply_enabled or recruit_gate:
+                if await _force_draft_by_saved_contact_name(sender_clean):
+                    log.info(f"[{source.upper()}] forced draft by saved contact name policy for {sender_clean}")
+                    intent = classify(text)
+                    await _save_draft(source, sender_clean, reply, intent)
+                    continue
                 if recruit_gate:
                     log.info(f"[RECRUIT-AUTOREPLY] sending to {sender_clean} ({source}) despite SAFE MODE")
                 bridge = get_bridge1() if source == "bridge1" else get_bridge2()

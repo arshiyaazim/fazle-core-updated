@@ -2,8 +2,12 @@
 Fazle Core — Configuration
 Reads from .env file. All settings in one place.
 """
+from __future__ import annotations
+
 from functools import lru_cache
+from pathlib import Path
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from typing import Optional
 
 
@@ -42,6 +46,14 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     debug: bool = False
     internal_api_key: str = "fazle-core-internal-2026"
+
+    @field_validator("debug", mode="before")
+    @classmethod
+    def _parse_debug(cls, v):
+        # Some runtime env files use DEBUG=release; treat as debug disabled.
+        if isinstance(v, str) and v.strip().lower() in {"release", "prod", "production"}:
+            return False
+        return v
 
     # Safe mode — no outgoing messages when False
     auto_reply_enabled: bool = False
@@ -89,7 +101,9 @@ class Settings(BaseSettings):
     # Phones: explicit E.164 phone numbers (without +)
     draft_always_phones: str = ""
     # Names: case-insensitive display name substrings
-    draft_always_names: str = ""
+    # Default: if a saved contact name contains these tokens, never auto-send
+    # (reply becomes a draft for admin review).
+    draft_always_names: str = "al-aqsa,escort,client,office"
     # Prefixes: contact display_name starts with any of these words → always draft
     draft_name_prefixes: str = "client,escort,office"
 
@@ -166,7 +180,9 @@ class Settings(BaseSettings):
         return result
 
     class Config:
-        env_file = "/home/azim/fazle-core/.env"
+        # Prefer repo-local `.env` by default (production path is /home/azim/core/.env).
+        # BaseSettings still reads from real environment variables if provided by systemd/Docker.
+        env_file = str(Path(__file__).resolve().parents[1] / ".env")
         extra = "ignore"
 
 

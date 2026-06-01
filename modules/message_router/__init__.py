@@ -35,9 +35,12 @@ from modules.escort import (
 )
 from modules.knowledge_base import get_reply as kb_get_reply
 from modules.recruitment_flow import (
-    intake_message as recruit_intake,
     get_active_session,
     is_recruitment_trigger,
+)
+from modules.recruitment_ai import (
+    generate_recruitment_reply,
+    looks_like_recruitment_followup,
 )
 from modules.admin_commands import is_admin_command, process_admin_command, list_payment_drafts
 from modules.admin_commands.nl_router import is_nl_admin_query, process_nl_admin_query
@@ -280,33 +283,29 @@ async def process_message(
 
     # ── 7. CANDIDATE — recruitment funnel ─────────────────────────────────────
     if role_str == "candidate" or intent == "recruitment":
-        active_session = await get_active_session(sender)
-        if active_session:
-            result = await recruit_intake(sender, text, source)
-            if result["reply"]:
-                return result["reply"], None
-        kb_reply = await kb_get_reply(text, intent)
-        if kb_reply:
-            return kb_reply, None
-        if is_recruitment_trigger(text):
-            result = await recruit_intake(sender, text, source)
-            if result["reply"]:
-                return result["reply"], None
+        db_ctx = await get_contact_context(sender)
+        ai_reply = await generate_recruitment_reply(
+            phone=sender,
+            text=text,
+            source=source,
+            contact_context=db_ctx,
+        )
+        if ai_reply:
+            return ai_reply, None
 
     # ── 8. RECRUITMENT for new_lead / known_contact roles ─────────────────────
     if role_str in ("new_lead", "unknown", "known_contact"):
         active_session = await get_active_session(sender)
-        if active_session:
-            result = await recruit_intake(sender, text, source)
-            if result["reply"]:
-                return result["reply"], None
-        kb_reply = await kb_get_reply(text, intent)
-        if kb_reply:
-            return kb_reply, None
-        if is_recruitment_trigger(text):
-            result = await recruit_intake(sender, text, source)
-            if result["reply"]:
-                return result["reply"], None
+        if active_session or is_recruitment_trigger(text) or looks_like_recruitment_followup(text):
+            db_ctx = await get_contact_context(sender)
+            ai_reply = await generate_recruitment_reply(
+                phone=sender,
+                text=text,
+                source=source,
+                contact_context=db_ctx,
+            )
+            if ai_reply:
+                return ai_reply, None
 
     # ── 9. ESCORT ORDER (intent-triggered for non-registered senders) ─────────
     if intent in ("client_order", "escort_duty"):

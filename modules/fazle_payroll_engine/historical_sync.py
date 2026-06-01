@@ -16,7 +16,7 @@ Target chat JIDs (owner → accountant, historical payment data):
   Bridge1: Can be configured via FPE_SYNC_CHAT_JIDS setting
 
 SQLite paths (same as bridge_poller BRIDGE_CONFIGS):
-  Bridge1: /home/azim/whatsapp-mcp/whatsapp-bridge/store/messages.db
+  Bridge1: /home/azim/whatsapp1/store/messages.db
   Bridge2: /home/azim/whatsapp2/store/messages.db
 """
 from __future__ import annotations
@@ -39,8 +39,8 @@ _BRIDGE_CONFIGS = [
     {
         "name": "bridge1",
         "source_number": "8801958122300",
-        "messages_db": "/home/azim/whatsapp-mcp/whatsapp-bridge/store/messages.db",
-        "whatsapp_db": "/home/azim/whatsapp-mcp/whatsapp-bridge/store/whatsapp.db",
+        "messages_db": "/home/azim/whatsapp1/store/messages.db",
+        "whatsapp_db": "/home/azim/whatsapp1/store/whatsapp.db",
         # When all_dms=True, enumerate ALL individual DM chat JIDs from SQLite
         # instead of relying solely on FPE_SYNC_CHAT_JIDS.  Controlled by
         # env var BRIDGE1_INGEST_ALL_DMS=true.

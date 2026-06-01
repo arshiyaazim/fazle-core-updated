@@ -4,7 +4,7 @@ Fazle Core — Unified Contact Sync
 Merges contacts from all three WhatsApp sources into the central
 wbom_contacts PostgreSQL table:
 
-  Source 1: bridge1 — /home/azim/bridges/bridge1/store/whatsapp.db
+  Source 1: bridge1 — /home/azim/whatsapp1/store/whatsapp.db
   Source 2: bridge2 — /home/azim/bridges/bridge2/store/whatsapp.db
   Source 3: Meta    — populated from inbound webhook messages (no SQLite)
 
@@ -42,7 +42,7 @@ log = logging.getLogger("fazle.contact_sync")
 BRIDGE_SOURCES = [
     {
         "bridge": "bridge1",
-        "whatsapp_db": "/home/azim/bridges/bridge1/store/whatsapp.db",
+        "whatsapp_db": "/home/azim/whatsapp1/store/whatsapp.db",
         "number": "8801958122300",
     },
     {

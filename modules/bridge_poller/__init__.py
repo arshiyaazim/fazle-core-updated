@@ -36,6 +36,7 @@ from app.bridge import get_bridge1, get_bridge2
 from modules.message_router import process_message, get_primary_admin, _is_safe_autosend_intent
 from modules.intent import classify as classify_intent
 from modules.recruitment_flow import is_recruitment_trigger as _is_recruit_trigger, get_active_session as _get_recruit_session
+from modules.recruitment_ai import looks_like_recruitment_followup as _looks_like_recruit_followup
 
 _settings = get_settings()
 
@@ -49,8 +50,8 @@ _SEND_GATE_CHECK_INTERVAL = 300  # re-verify send-control every 5 min (survives 
 BRIDGE_CONFIGS = [
     {
         "name": "bridge1",
-        "messages_db": "/home/azim/whatsapp-mcp/whatsapp-bridge/store/messages.db",
-        "whatsapp_db": "/home/azim/whatsapp-mcp/whatsapp-bridge/store/whatsapp.db",
+        "messages_db": "/home/azim/whatsapp1/store/messages.db",
+        "whatsapp_db": "/home/azim/whatsapp1/store/whatsapp.db",
         "get_bridge": get_bridge1,
     },
     {
@@ -256,7 +257,7 @@ def _fetch_new_messages(
     """
     messages: list[dict] = []
     max_ts = since_ts
-    bridge_tag = "bridge1" if "whatsapp-mcp/whatsapp-bridge" in messages_db else ("bridge2" if "/whatsapp2/" in messages_db else "unknown")
+    bridge_tag = "bridge1" if "/whatsapp1/" in messages_db else ("bridge2" if "/whatsapp2/" in messages_db else "unknown")
     skipped_no_text = 0
     unresolved_lid = 0
 
@@ -855,6 +856,12 @@ async def _poll_bridge(config: dict):
 
                 # Classify intent for draft storage (process_message re-classifies internally)
                 msg_intent = classify_intent(text)
+                if msg_intent in ("unknown", "greeting"):
+                    try:
+                        if _is_recruit_trigger(text) or _looks_like_recruit_followup(text) or await _get_recruit_session(phone):
+                            msg_intent = "recruitment"
+                    except Exception as _recruit_intent_err:
+                        log.debug(f"[P17-RECRUIT] intent override check failed {phone}: {_recruit_intent_err}")
 
                 # STEP 8: Prompt injection defense — quarantine before LLM routing
                 _injection_pattern = _detect_prompt_injection(text)

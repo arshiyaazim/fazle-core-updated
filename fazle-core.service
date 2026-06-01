@@ -5,13 +5,15 @@ After=network.target docker.service
 [Service]
 Type=simple
 User=azim
-WorkingDirectory=/home/azim/fazle-core
-EnvironmentFile=/home/azim/fazle-core/.env
-ExecStart=/home/azim/fazle-core/venv/bin/python run.py
+WorkingDirectory=/home/azim/core
+EnvironmentFile=/home/azim/core/.env
+EnvironmentFile=-/home/azim/secure-env-backup/runtime-services.env
+ExecStartPre=-/home/azim/shared/scripts/generate_runtime_services_env.sh
+ExecStart=/home/azim/.venv/bin/python run.py
 Restart=always
 RestartSec=5
-StandardOutput=append:/home/azim/fazle-core/logs/fazle-core.log
-StandardError=append:/home/azim/fazle-core/logs/fazle-core-error.log
+StandardOutput=append:/home/azim/core/logs/fazle-core.log
+StandardError=append:/home/azim/core/logs/fazle-core-error.log
 
 [Install]
 WantedBy=multi-user.target

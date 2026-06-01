@@ -7,13 +7,14 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 _initialized = False
+_DEFAULT_LOG_DIR = str((Path(__file__).resolve().parents[1] / "logs"))
 
 
 def setup_logging() -> None:
     global _initialized
     if _initialized:
         return
-    log_dir = Path(os.getenv("FAZLE_LOG_DIR", "/home/azim/fazle-core/logs"))
+    log_dir = Path(os.getenv("FAZLE_LOG_DIR", _DEFAULT_LOG_DIR))
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "fazle-core.log"
 
