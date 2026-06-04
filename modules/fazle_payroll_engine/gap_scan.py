@@ -66,11 +66,20 @@ async def gap_scan_loop(chat_jids: Optional[list[str]] = None) -> None:
             runs = await run_gap_scan_once(chat_jids)
             missing = sum(r.get("missing_count", 0) for r in runs)
             backfilled = sum(r.get("backfilled", 0) for r in runs)
-            if missing or backfilled:
+            skipped = sum(r.get("skipped_no_content", 0) for r in runs)
+            real_gaps = missing - skipped
+            if real_gaps > 0:
                 log.warning(
-                    "[fpe.gapscan] pass complete missing=%d backfilled=%d",
-                    missing, backfilled,
+                    "[fpe.gapscan] pass complete missing=%d skipped=%d real_gaps=%d backfilled=%d",
+                    missing, skipped, real_gaps, backfilled,
                 )
+            elif missing > 0:
+                log.debug(
+                    "[fpe.gapscan] pass complete missing=%d skipped=%d all skipped (media-only)",
+                    missing, skipped,
+                )
+            if backfilled > 0:
+                log.info("[fpe.gapscan] pass complete backfilled=%d", backfilled)
         except asyncio.CancelledError:
             break
         except Exception as exc:

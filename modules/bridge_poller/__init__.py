@@ -42,9 +42,13 @@ _settings = get_settings()
 
 log = logging.getLogger("fazle.bridge_poller")
 
-POLL_INTERVAL = 5  # seconds
+POLL_INTERVAL = 5  # seconds — used only for send-gate period calculation
 REPLY_COOLDOWN = 60  # minimum seconds between replies to same number
 _SEND_GATE_CHECK_INTERVAL = 300  # re-verify send-control every 5 min (survives bridge restart)
+
+BRIDGE_POLL_MIN_S   = 1.0   # poll interval when messages are arriving
+BRIDGE_POLL_MAX_S   = 30.0  # poll interval during sustained idle
+BRIDGE_POLL_BACKOFF = 1.5   # multiply sleep by this each consecutive idle iteration
 
 # Per-bridge SQLite paths — loaded from settings at startup
 BRIDGE_CONFIGS = [
@@ -457,7 +461,35 @@ def _fetch_outgoing_escort_completions(
 
 
 # ── Reply cooldown (in-memory per process) ────────────────────────────────────
-_last_reply: dict[str, float] = {}  # phone → unix timestamp of last reply
+_last_reply: dict[str, float] = {}  # phone → unix timestamp of last reply (in-memory fallback)
+
+
+async def _redis_cooldown_can_reply(phone: str):
+    """Check Redis cooldown. Returns True=can reply, False=blocked, None=Redis unavailable."""
+    try:
+        import redis.asyncio as aioredis
+        from app.config import get_settings
+        r = aioredis.from_url(get_settings().redis_url, socket_connect_timeout=1)
+        exists = await r.exists(f"fazle:cooldown:{phone}")
+        await r.aclose()
+        return not bool(exists)
+    except Exception as exc:
+        log.warning("[bridge_poller] Redis cooldown check failed, in-memory fallback: %s", exc)
+        return None
+
+
+async def _redis_cooldown_set(phone: str) -> bool:
+    """Write Redis cooldown key. Returns False if Redis unavailable."""
+    try:
+        import redis.asyncio as aioredis
+        from app.config import get_settings
+        r = aioredis.from_url(get_settings().redis_url, socket_connect_timeout=1)
+        await r.set(f"fazle:cooldown:{phone}", "1", ex=REPLY_COOLDOWN)
+        await r.aclose()
+        return True
+    except Exception as exc:
+        log.warning("[bridge_poller] Redis cooldown set failed, in-memory fallback: %s", exc)
+        return False
 
 # ── STEP 7: Loop detection ─────────────────────────────────────────────────────
 _reply_ts_window: dict[str, list] = {}    # phone → recent reply timestamps
@@ -569,16 +601,43 @@ def _detect_prompt_injection(text: str) -> Optional[str]:
     return next((p for p in _PROMPT_INJECTION_PATTERNS if p in text_lower), None)
 
 
-def _can_reply(phone: str) -> bool:
+async def _can_reply(phone: str) -> bool:
+    result = await _redis_cooldown_can_reply(phone)
+    if result is not None:
+        return result
+    # Redis unavailable — fall back to in-memory dict
     import time
     last = _last_reply.get(phone, 0)
     return (time.time() - last) >= REPLY_COOLDOWN
 
 
-def _record_reply(phone: str):
-    import time
-    _last_reply[phone] = time.time()
-    _record_loop_reply(phone)  # STEP 7: track for loop detection
+async def _check_social_daemon_health() -> bool:
+    """Returns True if the standalone social_auto_reply daemon appears alive.
+
+    Reads the daemon's last heartbeat from fazle_service_heartbeats.
+    Returns True (assume alive) on DB error or if no heartbeat exists yet,
+    to prevent false fallback during initial startup or transient DB issues.
+    Threshold: 300 seconds — daemon is considered dead if heartbeat older than 5 minutes.
+    """
+    try:
+        row = await fetch_one(
+            "SELECT EXTRACT(EPOCH FROM (NOW() - last_seen))::INT AS age "
+            "FROM fazle_service_heartbeats WHERE service = 'social_auto_reply'",
+        )
+        if not row:
+            return True  # no heartbeat yet — treat as alive to avoid false fallback
+        return int(row["age"]) < 300
+    except Exception:
+        return True  # DB failure — assume alive, avoid disabling social engine
+
+
+async def _record_reply(phone: str):
+    success = await _redis_cooldown_set(phone)
+    if not success:
+        # Redis unavailable — fall back to in-memory dict
+        import time
+        _last_reply[phone] = time.time()
+    _record_loop_reply(phone)  # STEP 7: always track loop detection in-memory
 
 
 def _is_draft_always(phone: str, role: str, display_name: str) -> bool:
@@ -621,9 +680,11 @@ async def _poll_bridge(config: dict):
 
     _poll_iter = 0  # tracks iterations for periodic send-gate re-check
     _gate_check_every = max(1, _SEND_GATE_CHECK_INTERVAL // POLL_INTERVAL)
+    _sleep_s = BRIDGE_POLL_MIN_S
 
     while True:
         try:
+            _had_activity = False
             loop = asyncio.get_event_loop()
             messages, new_cursor = await loop.run_in_executor(
                 None, _fetch_new_messages, messages_db, whatsapp_db, cursor
@@ -631,6 +692,7 @@ async def _poll_bridge(config: dict):
 
             if messages:
                 log.info(f"[{bridge_name}] {len(messages)} new message(s) to process")
+                _had_activity = True
 
             dedup_skipped = 0
             inbound_saved = 0
@@ -771,7 +833,7 @@ async def _poll_bridge(config: dict):
                                 bridge_obj = config["get_bridge"]()
                                 sent = await bridge_obj.send(phone, ack_reply)
                                 if sent:
-                                    _record_reply(phone)
+                                    await _record_reply(phone)
                                     _doc_ack_sent = True
                                     log.info(
                                         "[DOC_ACK_SENT] bridge=%s phone=%s doc_type=%s",
@@ -828,24 +890,31 @@ async def _poll_bridge(config: dict):
                     continue
 
                 if os.getenv("SOCIAL_AUTO_REPLY_SINGLE_ENGINE", "true").lower() in ("1", "true", "yes"):
-                    try:
-                        from modules.social_auto_reply import ingest_social_event
-                        await ingest_social_event(
-                            platform=bridge_name,
-                            event_type="message",
-                            sender_id=phone,
-                            text=text,
-                            message_id=str(msg.get("id") or msg.get("message_id") or ""),
-                            media_flag=False,
-                            raw_payload=dict(msg),
+                    if await _check_social_daemon_health():
+                        try:
+                            from modules.social_auto_reply import ingest_social_event
+                            await ingest_social_event(
+                                platform=bridge_name,
+                                event_type="message",
+                                sender_id=phone,
+                                text=text,
+                                message_id=str(msg.get("id") or msg.get("message_id") or ""),
+                                media_flag=False,
+                                raw_payload=dict(msg),
+                            )
+                        except Exception as _social_err:
+                            log.warning(f"[social] poller ingest failed bridge={bridge_name} phone={phone}: {_social_err}")
+                        log.debug(f"[{bridge_name}] social daemon is single reply engine; poller legacy router/send skipped for {phone}")
+                        continue
+                    else:
+                        log.error(
+                            f"[social] daemon heartbeat stale >300s — bridge={bridge_name} phone={phone}; "
+                            "falling through to legacy router"
                         )
-                    except Exception as _social_err:
-                        log.warning(f"[social] poller ingest failed bridge={bridge_name} phone={phone}: {_social_err}")
-                    log.debug(f"[{bridge_name}] social daemon is single reply engine; poller legacy router/send skipped for {phone}")
-                    continue
+                        # fall through to legacy path below — no 'continue'
 
                 # Cooldown check — don't spam the same person
-                if not _can_reply(phone):
+                if not await _can_reply(phone):
                     log.debug(f"[{bridge_name}] Cooldown active for {phone}, skipping reply")
                     continue
 
@@ -1043,7 +1112,7 @@ async def _poll_bridge(config: dict):
                             bridge = get_bridge()
                             sent = await bridge.send(phone, reply)
                             if sent:
-                                _record_reply(phone)
+                                await _record_reply(phone)
                                 await _save_message(bridge_name, phone, reply, "outbound",
                                                     identity_role=id_role, identity_confidence=id_conf,
                                                     workflow=msg_intent)
@@ -1090,6 +1159,7 @@ async def _poll_bridge(config: dict):
 
                 if out_msgs:
                     log.info(f"[{bridge_name}] {len(out_msgs)} outgoing message(s) to check for escort completions")
+                    _had_activity = True
 
                 from modules.escort import is_completed_escort_draft, handle_admin_escort_completion
                 from modules.escort_lifecycle import is_release_confirmation, handle_admin_release_confirmation
@@ -1144,6 +1214,13 @@ async def _poll_bridge(config: dict):
             except Exception as _hb_err:
                 log.warning(f"[{bridge_name}] heartbeat write failed: {_hb_err}")
 
+            # Update fazle_bridge_heartbeats so the watchdog stale-bridge check reflects real liveness
+            try:
+                from shared.queue import record_heartbeat as _record_hb
+                await _record_hb(bridge_id=bridge_name)
+            except Exception as _hb2_err:
+                log.debug(f"[{bridge_name}] bridge_heartbeats write failed: {_hb2_err}")
+
             # Periodic send-gate re-enable (survives independent bridge restarts)
             _poll_iter += 1
             if _poll_iter % _gate_check_every == 0:
@@ -1154,13 +1231,21 @@ async def _poll_bridge(config: dict):
                 except Exception as _ge_err:
                     log.warning(f"[{bridge_name}] send-gate periodic check failed: {_ge_err}")
 
+            # Adaptive backoff: reset to MIN on activity, ramp toward MAX when idle
+            if _had_activity:
+                _sleep_s = BRIDGE_POLL_MIN_S
+            else:
+                _sleep_s = min(_sleep_s * BRIDGE_POLL_BACKOFF, BRIDGE_POLL_MAX_S)
+            if _sleep_s > BRIDGE_POLL_MIN_S:
+                log.debug(f"[{bridge_name}] idle backoff: sleep={_sleep_s:.1f}s")
+
         except asyncio.CancelledError:
             log.info(f"[{bridge_name}] Poller stopped")
             break
         except Exception as e:
             log.exception(f"[{bridge_name}] Poll loop error: {e}")
 
-        await asyncio.sleep(POLL_INTERVAL)
+        await asyncio.sleep(_sleep_s)
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────

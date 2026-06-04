@@ -82,6 +82,7 @@ small.dim{color:var(--muted);font-size:11px}
   <button data-tab="scheduler">Scheduler</button>
   <button data-tab="rag">RAG (B21)</button>
   <button data-tab="obs">Observability (B22)</button>
+  <button data-tab="chat">💬 Chat Lab</button>
 </nav>
 
 <main>
@@ -206,6 +207,61 @@ small.dim{color:var(--muted);font-size:11px}
         <button class="btn" onclick="runRagSearch()">Search</button>
       </div>
       <div id="ragResults" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <!-- CHAT LAB -->
+  <section id="tab-chat" class="tab">
+    <div class="card" style="margin-bottom:10px">
+      <h2>Chat Lab — Admin Knowledge Q&amp;A</h2>
+      <div class="row" style="gap:14px;align-items:flex-start;flex-wrap:wrap">
+        <!-- Model selector -->
+        <div>
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Model</label>
+          <select id="chatModel" style="min-width:160px">
+            <option value="qwen2.5:3b">qwen2.5:3b (default)</option>
+            <option value="qwen3:8b">qwen3:8b (fast)</option>
+            <option value="qwen3:14b">qwen3:14b (best)</option>
+          </select>
+        </div>
+        <!-- Toggles -->
+        <div style="display:flex;gap:18px;align-items:center;padding-top:20px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+            <input type="checkbox" id="toggleAppCtx" checked>
+            <span>App Context (RAG)</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px" title="KB rows are always included in RAG index">
+            <input type="checkbox" id="toggleDbRead" checked disabled>
+            <span style="color:var(--muted)">DB Read (always on)</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px" title="Internet search — Phase 2 placeholder">
+            <input type="checkbox" id="toggleInternet" disabled>
+            <span style="color:var(--muted)">Internet Search (soon)</span>
+          </label>
+          <button class="btn sm" onclick="clearChatHistory()" style="margin-left:auto">🗑 Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Conversation history -->
+    <div class="card" id="chatHistoryCard" style="min-height:340px;max-height:520px;overflow-y:auto;padding:10px 14px;display:flex;flex-direction:column;gap:10px">
+      <div id="chatMessages" style="display:flex;flex-direction:column;gap:10px">
+        <div style="text-align:center;color:var(--muted);font-size:13px;padding:40px 0">
+          Fazle-কে প্রশ্ন করুন — বাংলায় বা ইংরেজিতে।<br>
+          <small>উদাহরণ: payroll module কোথায়? / WhatsApp bridge কয়টা? / qwen3:8b কি installed?</small>
+        </div>
+      </div>
+    </div>
+
+    <!-- Input row -->
+    <div class="card" style="margin-top:0;padding:10px 14px">
+      <div class="row" style="gap:8px">
+        <textarea id="chatInput" rows="2"
+          placeholder="প্রশ্ন লিখুন… (Shift+Enter = newline, Enter = send)"
+          style="flex:1;resize:vertical;font-family:inherit;font-size:14px;padding:8px 10px;border:1px solid var(--border);border-radius:5px;min-height:48px"></textarea>
+        <button class="btn" id="chatSendBtn" onclick="sendChatMessage()" style="align-self:flex-end;min-width:80px">Send</button>
+      </div>
+      <div id="chatStatus" style="font-size:12px;color:var(--muted);margin-top:4px;min-height:16px"></div>
     </div>
   </section>
 
@@ -545,6 +601,126 @@ async function loadObs(){
   } catch(e){ document.getElementById("obsErrorsBox").innerHTML = `<div class="pill err">${e.message}</div>`; }
 }
 
+// ── Chat Lab ──────────────────────────────────────────────────────────────────
+let _chatHistory = [];  // [{role:"user"|"assistant", content:str}]
+let _chatBusy = false;
+
+function _chatBubble(role, content, meta){
+  const isUser = role === "user";
+  const time = new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+  const metaHtml = meta
+    ? `<div style="margin-top:4px;font-size:11px;color:var(--muted)">${escapeHtml(meta)}</div>`
+    : "";
+  return `<div style="display:flex;flex-direction:column;align-items:${isUser?"flex-end":"flex-start"}">
+    <div style="max-width:82%;background:${isUser?"var(--accent)":"#f0f2f4"};color:${isUser?"#fff":"#222"};
+      padding:10px 13px;border-radius:${isUser?"14px 14px 4px 14px":"14px 14px 14px 4px"};
+      font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word">
+      ${escapeHtml(content)}
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:3px;padding:0 4px">${time}${isUser?"":" · Fazle"}</div>
+    ${metaHtml}
+  </div>`;
+}
+
+function _chatScroll(){
+  const card = document.getElementById("chatHistoryCard");
+  card.scrollTop = card.scrollHeight;
+}
+
+function _chatSetBusy(busy){
+  _chatBusy = busy;
+  const btn = document.getElementById("chatSendBtn");
+  const status = document.getElementById("chatStatus");
+  btn.disabled = busy;
+  btn.textContent = busy ? "…" : "Send";
+  status.textContent = busy ? "Fazle ভাবছে… (30-120s সময় লাগতে পারে)" : "";
+}
+
+async function sendChatMessage(){
+  if(_chatBusy) return;
+  const input = document.getElementById("chatInput");
+  const q = input.value.trim();
+  if(!q) return;
+
+  const model = document.getElementById("chatModel").value;
+  const appCtx = document.getElementById("toggleAppCtx").checked;
+
+  // Render user bubble
+  const msgs = document.getElementById("chatMessages");
+  msgs.innerHTML += _chatBubble("user", q);
+  _chatHistory.push({role:"user", content:q});
+  input.value = "";
+  _chatScroll();
+  _chatSetBusy(true);
+
+  // Typing indicator
+  const typingId = "chatTyping_" + Date.now();
+  msgs.innerHTML += `<div id="${typingId}" style="color:var(--muted);font-size:13px;padding:4px 8px">Fazle টাইপ করছে…</div>`;
+  _chatScroll();
+
+  try{
+    const r = await api("/chat/message", {
+      method: "POST",
+      body: {
+        q,
+        model,
+        history: _chatHistory.slice(-10),
+        app_context: appCtx,
+      }
+    });
+    document.getElementById(typingId)?.remove();
+    const answer = r.answer || "উত্তর পাওয়া যায়নি।";
+    const metaParts = [];
+    if(r.model) metaParts.push("model: "+r.model);
+    if(r.rag_used) metaParts.push("RAG ✓"+(r.top_score?" score:"+r.top_score.toFixed(2):""));
+    if(r.fallback) metaParts.push("⚠ LLM fallback");
+    msgs.innerHTML += _chatBubble("assistant", answer, metaParts.join(" · "));
+    _chatHistory.push({role:"assistant", content:answer});
+  } catch(e){
+    document.getElementById(typingId)?.remove();
+    msgs.innerHTML += _chatBubble("assistant", "⚠ Error: "+e.message);
+  }
+
+  _chatSetBusy(false);
+  _chatScroll();
+}
+
+function clearChatHistory(){
+  _chatHistory = [];
+  document.getElementById("chatMessages").innerHTML =
+    `<div style="text-align:center;color:var(--muted);font-size:13px;padding:40px 0">
+      কথোপকথন মুছে ফেলা হয়েছে। নতুন প্রশ্ন করুন।
+    </div>`;
+}
+
+async function loadChat(){
+  // Load available models and update selector
+  try{
+    const r = await api("/chat/models");
+    const sel = document.getElementById("chatModel");
+    sel.innerHTML = "";
+    for(const m of r.models){
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      const tag = m.active ? " (default)" : (m.available ? "" : " ✗ not installed");
+      opt.textContent = m.id + tag;
+      opt.disabled = !m.available;
+      if(m.active) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  } catch(e){ /* keep default options */ }
+}
+
+// Enter to send, Shift+Enter for newline
+document.addEventListener("DOMContentLoaded", ()=>{
+  const inp = document.getElementById("chatInput");
+  if(inp){
+    inp.addEventListener("keydown", e=>{
+      if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); sendChatMessage(); }
+    });
+  }
+});
+
 function loadTab(tab){
   if(tab==="overview") loadOverview();
   else if(tab==="drafts") loadDrafts();
@@ -555,6 +731,7 @@ function loadTab(tab){
   else if(tab==="scheduler") loadScheduler();
   else if(tab==="rag") loadRag();
   else if(tab==="obs") loadObs();
+  else if(tab==="chat") loadChat();
 }
 function refreshAll(){
   const active = document.querySelector("nav button.active").dataset.tab;

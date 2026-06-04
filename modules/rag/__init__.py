@@ -74,6 +74,25 @@ _CHUNK_UNSAFE_PATTERNS: tuple = (
     "প্রার্থীর সম্ভাব্য প্রশ্ন", "Semantic Analysis", "Tokenization",
     "RAG pipeline", "LLM pipeline", "prompt template", "OCR raw",
     "বিশ্লেষণ (Intent)", "reasoning_trace",
+    # PATCH 4: Additional internal instruction markers found in resource files
+    "AI ব্যবহারের জন্য বিশেষ নির্দেশিকা",
+    "এআই ব্যবহারের নির্দেশিকা",
+    "CASE A —", "CASE B —",
+    "এআই-এর ইনটেন্ট অনুধাবন",
+    "এআই-এর প্রতিক্রিয়া (Action)",
+    "AI সিস্টেমের বিশেষত্ব",
+    "AI-এর একটি বিশেষ অটো-রিপ্লাই",
+    "অটো-রিপ্লাই সিস্টেমের জন্য",
+    # PATCH 5 (Phase 1C QA): Inline AI answer annotations found in policy file
+    "এআই উত্তর",        # "এআই উত্তর (প্রশ্ন):" inline annotations in employee_policy file
+    "AI উত্তর",
+    "উত্তর — প্রার্থী",  # "এআই উত্তর — প্রার্থী (Candidate):"
+    "উত্তর — কর্মচারী", # "এআই উত্তর — কর্মচারী:"
+    # PATCH 5: English AI instruction text found in Cash Payment Accountant-Admin.txt
+    "The AI manages",
+    "that the AI tracks",
+    "the AI tracks",
+    "AI manages internal",
 )
 
 

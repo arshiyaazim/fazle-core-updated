@@ -10,6 +10,17 @@ Admin WhatsApp commands (wired in modules.admin_commands):
   REVERSE <draft_id> <reason>
   ADJUST  <draft_id> <new_amount> <method> [reason]
 """
+
+# =============================================================================
+# MODULE STATUS: DORMANT
+# Date audited: 2026-06-02
+# External callers: 0 (grep confirmed — no import in app/, modules/, or service_runner.py)
+# Functions defined: reverse_payment, adjust_payment, list_corrections
+# Fully implemented but never invoked — the admin_commands REVERSE/ADJUST wiring
+#   was never added. The module is safe to ignore during normal operation.
+# DO NOT DELETE without explicit confirmation from Azim first.
+# =============================================================================
+
 from __future__ import annotations
 
 import logging

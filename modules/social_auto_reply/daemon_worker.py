@@ -6,6 +6,7 @@ import logging
 import os
 from typing import Optional
 
+from app.database import execute
 from app.error_log import record_error
 
 from . import backlog_processor, rate_limiter, send_queue, state_tracker
@@ -23,6 +24,15 @@ async def _loop() -> None:
     last_backlog = 0.0
     while True:
         try:
+            try:
+                await execute(
+                    """INSERT INTO fazle_service_heartbeats (service, last_seen, queue_depth)
+                       VALUES ('social_auto_reply', NOW(), 0)
+                       ON CONFLICT (service)
+                       DO UPDATE SET last_seen = NOW(), queue_depth = EXCLUDED.queue_depth""",
+                )
+            except Exception:
+                pass  # heartbeat failure is non-fatal — daemon continues
             if await state_tracker.is_paused():
                 await asyncio.sleep(idle_sleep)
                 continue

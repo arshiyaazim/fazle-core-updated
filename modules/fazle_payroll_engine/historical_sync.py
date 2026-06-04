@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
@@ -54,10 +55,10 @@ _BRIDGE_CONFIGS = [
 ]
 
 BATCH_SIZE = 200      # rows per SQLite fetch
-SYNC_INTERVAL = 15    # seconds between full sync passes (near-real-time)
+SYNC_INTERVAL = int(os.getenv("FPE_HSYNC_INTERVAL_S", "15"))  # seconds between full sync passes
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────
 
 async def run_historical_sync_once(chat_jids: Optional[list[str]] = None) -> dict:
     """
@@ -71,8 +72,7 @@ async def run_historical_sync_once(chat_jids: Optional[list[str]] = None) -> dic
     target_jids: list[str] = chat_jids or _get_target_jids(settings)
 
     # BRIDGE1_INGEST_ALL_DMS: when true, bridge1 ingests ALL individual DM JIDs
-    import os as _os
-    bridge1_all_dms: bool = _os.getenv("BRIDGE1_INGEST_ALL_DMS", "false").lower() in ("true", "1", "yes")
+    bridge1_all_dms: bool = os.getenv("BRIDGE1_INGEST_ALL_DMS", "false").lower() in ("true", "1", "yes")
 
     if not target_jids and not bridge1_all_dms:
         log.warning("[fpe.hsync] No target chat JIDs configured — skipping historical sync")
@@ -110,7 +110,7 @@ async def historical_sync_loop(chat_jids: Optional[list[str]] = None) -> None:
         await asyncio.sleep(SYNC_INTERVAL)
 
 
-# ── Bridge-level sync ─────────────────────────────────────────────────────────
+# ── Bridge-level sync ─────────────────────────────────────────────────
 
 async def _sync_bridge_all_dms(bridge: dict) -> int:
     """
@@ -239,7 +239,7 @@ async def _ingest_row(row: dict, bridge: dict, jid: str, lid_map: dict) -> Optio
     return await ingest_message(req)
 
 
-# ── SQLite helpers (run in thread pool) ──────────────────────────────────────
+# ── SQLite helpers (run in thread pool) ──────────────────────────────────
 
 def _fetch_messages_sync(
     messages_db: str,
@@ -314,7 +314,7 @@ def _load_lid_map_sync(whatsapp_db: str) -> dict:
     return lid_map
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────
 
 def _resolve_phone(sender: str, lid_map: dict) -> Optional[str]:
     """Resolve sender string to 01XXXXXXXXX phone. Handles JID and LID formats."""

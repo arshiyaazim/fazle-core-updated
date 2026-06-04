@@ -24,9 +24,9 @@ from typing import Optional
 
 from app.config import get_settings
 from app.database import fetch_one, fetch_all, execute
-from app import ollama as ai
 from modules.intent import classify
 from modules.identity_brain import detect_identity
+from modules.number_identity import normalize_phone as get_phone_variants
 from modules.payroll_logic import get_payroll_summary, format_payroll_context
 from modules.escort import (
     handle_escort_client_message,
@@ -90,12 +90,7 @@ _SAFE_AUTOSEND_INTENTS: frozenset[str] = frozenset({
 
 def _phone_variants(phone: str) -> list[str]:
     """Return all normalized forms of a phone number for DB lookup."""
-    variants = [phone]
-    if phone.startswith("880") and len(phone) >= 13:
-        variants.append("0" + phone[3:])
-    elif phone.startswith("01") and len(phone) == 11:
-        variants.append("880" + phone[1:])
-    return variants
+    return get_phone_variants(phone)
 
 
 async def _should_silent_skip(sender: str) -> tuple[bool, str]:

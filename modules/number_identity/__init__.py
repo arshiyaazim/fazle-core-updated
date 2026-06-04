@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 from datetime import datetime, timezone
 
 from app.critical_numbers import normalize_phone_880
@@ -12,6 +13,29 @@ def canonical_phone(raw: str) -> str:
     if raw.startswith("unresolved:"):
         return raw
     return normalize_phone_880(raw)
+
+
+def normalize_phone(raw: str) -> list[str]:
+    """Return all valid normalized variants of a Bangladesh mobile number.
+
+    Order: [01XXXXXXXXXX, 8801XXXXXXXXXX, +8801XXXXXXXXXX]
+    Returns empty list if input cannot be normalized.
+    """
+    if not raw:
+        return []
+    digits = re.sub(r"\D", "", raw)
+    if not digits:
+        return []
+    # Already canonical local format
+    if len(digits) == 11 and digits.startswith("01"):
+        return [digits, "880" + digits[1:], "+880" + digits[1:]]
+    # 880 country code
+    if len(digits) == 13 and digits.startswith("880"):
+        return ["0" + digits[3:], digits, "+" + digits]
+    # 10-digit bare mobile
+    if len(digits) == 10 and digits.startswith("1"):
+        return ["0" + digits, "880" + digits, "+880" + digits]
+    return []
 
 
 def phone_last10(raw: str) -> str:

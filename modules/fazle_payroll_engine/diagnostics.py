@@ -138,7 +138,6 @@ async def _check_and_alert_stale_bridges() -> None:
         # Record that the FPE health worker itself is alive
         await record_heartbeat(
             bridge_id="fpe_health_worker",
-            status="alive",
         )
 
         stale = await get_stale_bridges(stale_minutes=_GAP_ALERT_MINS)

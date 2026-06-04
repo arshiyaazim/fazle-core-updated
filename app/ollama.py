@@ -16,9 +16,13 @@ from app.config import get_settings
 
 log = logging.getLogger("fazle.ollama")
 
-# Serializes all Ollama calls — prevents concurrent-request timeout failures.
+# Serializes WhatsApp auto-reply Ollama calls — prevents concurrent-request timeout failures.
 # Ollama on this hardware takes ~17s per generate; two simultaneous = one times out.
 _ollama_sem = asyncio.Semaphore(1)
+
+# Separate semaphore for Web UI chat lab — independent from WhatsApp pipeline so
+# admin chat requests don't queue behind automated reply processing.
+_rag_sem = asyncio.Semaphore(1)
 
 
 # ── Base system prompt ─────────────────────────────────────────────────────────
@@ -236,6 +240,133 @@ Reply only the WhatsApp message text:
         "চাকরির জন্য নাম, বয়স ও জেলা লিখে পাঠান।\n"
         "বিস্তারিত জানতে WhatsApp: 01958 122322"
     )
+
+
+def _is_qwen3(model: str) -> bool:
+    """qwen3 models require think:false or they output empty responses."""
+    return model.startswith("qwen3:")
+
+
+async def generate_rag_answer(
+    question: str,
+    context: str,
+    model: str | None = None,
+) -> str | None:
+    """
+    Generate a natural Bengali answer for the Web UI chat lab.
+    Uses the retrieved RAG context chunks as the sole knowledge source.
+    Returns None on failure so the caller can fallback to raw chunks.
+    """
+    settings = get_settings()
+    active_model = model or settings.ollama_model
+    prompt = f"""\
+তুমি ফজলে — আল-আকসা সিকিউরিটি অ্যান্ড লজিস্টিকস সার্ভিসেস লিমিটেডের সহকারী।
+
+নিচের তথ্য থেকে প্রশ্নের উত্তর দাও। শুধুমাত্র দেওয়া তথ্য ব্যবহার করো।
+যদি তথ্যে উত্তর না থাকে, বলো: "এ বিষয়ে নির্দিষ্ট তথ্য আমার কাছে নেই। অফিসে যোগাযোগ করুন।"
+
+নিয়ম:
+- বাংলায় উত্তর দাও (প্রশ্ন ইংরেজিতে হলে ইংরেজিতে)
+- সর্বোচ্চ ৩-৪ বাক্য
+- কোনো markdown, table বা internal label দেবে না
+- সম্মানজনক ও সহজ ভাষায় বলো
+
+তথ্য:
+{context}
+
+প্রশ্ন: {question[:400]}
+
+উত্তর:"""
+
+    payload: dict = {
+        "model": active_model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature": 0.3,
+            "num_predict": 150,
+            "repeat_penalty": 1.05,
+        },
+    }
+    if _is_qwen3(active_model):
+        payload["think"] = False
+
+    async with _rag_sem:
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                r = await client.post(f"{settings.ollama_url}/api/generate", json=payload)
+                if r.status_code == 200:
+                    reply = r.json().get("response", "").strip()
+                    return reply if reply else None
+                log.warning("Ollama RAG answer non-200: %s", r.status_code)
+        except Exception as e:
+            log.error("Ollama RAG answer error: %s: %s", type(e).__name__, e)
+    return None
+
+
+async def generate_chat_reply(
+    question: str,
+    context: str,
+    history: list[dict],
+    model: str | None = None,
+) -> str | None:
+    """
+    Generate a conversational admin chat reply with optional RAG context and turn history.
+    history items: [{role: "user"|"assistant", content: str}]
+    Returns None on failure.
+    """
+    settings = get_settings()
+    active_model = model or settings.ollama_model
+
+    history_block = ""
+    if history:
+        lines = []
+        for h in history[-6:]:  # last 3 turns max
+            role_label = "Admin" if h.get("role") == "user" else "Fazle"
+            lines.append(f"{role_label}: {str(h.get('content', ''))[:300]}")
+        history_block = "\n\nআগের কথোপকথন:\n" + "\n".join(lines)
+
+    context_block = ""
+    if context.strip():
+        context_block = f"\n\nজ্ঞানভাণ্ডার থেকে তথ্য:\n{context}"
+
+    prompt = f"""\
+তুমি ফজলে — আল-আকসা সিকিউরিটি অ্যান্ড লজিস্টিকস সার্ভিসেস লিমিটেডের AI সহকারী (Admin Chat Lab)।
+
+নিয়ম:
+- বাংলায় উত্তর দাও (প্রশ্ন ইংরেজিতে হলে ইংরেজিতে)
+- সর্বোচ্চ ৪-৫ বাক্য; সরাসরি ও তথ্যবহুল হও
+- কোনো markdown, table বা internal label দেবে না
+- শুধুমাত্র দেওয়া তথ্য ও context ব্যবহার করো; অনুমান করো না{history_block}{context_block}
+
+Admin-এর প্রশ্ন: {question[:400]}
+
+উত্তর:"""
+
+    payload: dict = {
+        "model": active_model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature": 0.3,
+            "num_predict": 100,   # 100 tok @ 1.1 tok/s ≈ 91s → fits in 180s window
+            "repeat_penalty": 1.05,
+        },
+    }
+    if _is_qwen3(active_model):
+        payload["think"] = False
+
+    async with _rag_sem:
+        try:
+            async with httpx.AsyncClient(timeout=180.0) as client:  # was 120s; 180s covers 100 tok at 0.8 tok/s
+                r = await client.post(f"{settings.ollama_url}/api/generate", json=payload)
+                if r.status_code == 200:
+                    reply = r.json().get("response", "").strip()
+                    return reply if reply else None
+                log.warning("Ollama chat reply non-200: %s", r.status_code)
+        except Exception as e:
+            log.error("Ollama chat reply error: %s: %s", type(e).__name__, e)
+    return None
 
 
 async def check_ollama_health() -> dict:

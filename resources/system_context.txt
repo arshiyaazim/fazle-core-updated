@@ -1,0 +1,125 @@
+Fazle Core — System Architecture Reference
+==========================================
+Last Updated: 2026-06-02
+
+এই ডকুমেন্টটি Fazle Core সিস্টেমের আর্কিটেকচার ও মডিউলের সংক্ষিপ্ত বিবরণ।
+This document describes the Fazle Core system architecture for admin reference.
+
+------------------------------------------
+অ্যাপ্লিকেশন সারসংক্ষেপ (App Summary)
+------------------------------------------
+
+অ্যাপের নাম: Fazle Core
+উদ্দেশ্য: আল-আকসা সিকিউরিটি সার্ভিসের WhatsApp AI backend, Admin Dashboard এবং ব্যবসায়িক অপারেশন।
+Framework: FastAPI (Python)
+Entry Point: run.py → app.main:app
+Systemd Unit: fazle-core.service
+Local Port: 8200
+Health Endpoint: http://localhost:8200/health
+Public URL: https://fazle.iamazim.com
+API URL: https://api.iamazim.com
+
+অ্যাপটি সচল (running) আছে কিনা জানতে: curl http://localhost:8200/health
+
+------------------------------------------
+সক্রিয় মডিউলসমূহ (Active Modules)
+------------------------------------------
+
+১. bridge_poller — WhatsApp bridge থেকে ইনবাউন্ড মেসেজ পড়ে
+২. message_router — intent অনুযায়ী মেসেজ রাউট করে
+৩. recruitment_ai — নিয়োগ সংক্রান্ত AI রিপ্লাই (qwen2.5:3b)
+৪. knowledge_base — হার্ডকোডেড + DB-backed জ্ঞানভাণ্ডার
+৫. payroll (fazle_payroll_engine) — বেতন প্রক্রিয়াকরণ মডিউল, URL: /payroll
+৬. escort_roster — এস্কর্ট রোস্টার ব্যবস্থাপনা, URL: /escort-roster
+৭. outbound — আউটবাউন্ড মেসেজ queue (OUTBOUND_ENABLED=false)
+৮. social_auto_reply — সোশ্যাল মিডিয়া অটো-রিপ্লাই
+৯. scheduler — scheduled jobs চালায়
+১০. rag — RAG (Retrieval-Augmented Generation) নলেজ সার্চ, URL: /rag/answer
+
+payroll module: সক্রিয় আছে। URL: https://fazle.iamazim.com/payroll
+escort roster module: সক্রিয় আছে। URL: https://fazle.iamazim.com/escort-roster
+
+------------------------------------------
+WhatsApp Bridge সমূহ
+------------------------------------------
+
+মোট ২টি WhatsApp Bridge সক্রিয়:
+
+Bridge 1 (HR Bridge):
+  নম্বর: +8801958122300
+  Systemd: whatsapp-bridge.service
+  Port: 8082
+  SQLite Store: /home/azim/whatsapp1/store/messages.db
+
+Bridge 2 (OPS Bridge):
+  নম্বর: +8801880446111
+  Systemd: whatsapp-bridge2.service
+  Port: 8081
+  SQLite Store: /home/azim/whatsapp2/store/messages.db
+
+Meta Cloud API: webhook এ সংযুক্ত (/webhook/meta) — auto-reply সক্রিয় নয়।
+
+------------------------------------------
+AI মডেল কনফিগারেশন (Ollama)
+------------------------------------------
+
+Ollama Container: Docker container নামে "ollama"
+Ollama URL: http://172.22.0.7:11434
+সক্রিয় মডেল (Active Model): qwen2.5:3b (WhatsApp auto-reply এর জন্য)
+ইনস্টলড মডেল:
+  - qwen2.5:3b (1.9 GB) — WhatsApp auto-reply
+  - qwen3:14b (9.3 GB) — available, WhatsApp-এ ব্যবহার হচ্ছে না
+
+Ollama কোন model ব্যবহার করছে? OLLAMA_MODEL=qwen2.5:3b (.env থেকে)
+মডেল পরিবর্তন করতে: .env এ OLLAMA_MODEL পরিবর্তন করে fazle-core restart করুন।
+
+------------------------------------------
+ডেটাবেস (Database)
+------------------------------------------
+
+Database: PostgreSQL (Docker container: ai-postgres)
+Connection: DATABASE_URL (.env এ)
+Status: Connected (health probe: db.status=ok)
+
+প্রধান টেবিলসমূহ:
+  - fazle_knowledge_base — নলেজ বেস (recruitment, business, vessel_duty ইত্যাদি)
+  - wbom_contacts — পরিচিতি তালিকা
+  - wbom_whatsapp_messages — WhatsApp মেসেজ ইতিহাস
+  - fpe_employees — কর্মচারী তথ্য
+  - fpe_transactions — আর্থিক লেনদেন
+  - escort_programs — এস্কর্ট প্রোগ্রাম
+
+ডেটাবেস সংযুক্ত আছে কিনা: /health endpoint এ db.status দেখুন।
+
+------------------------------------------
+Media Processor (STT / OCR / PDF)
+------------------------------------------
+
+Service: media-processor.service
+Port: 8090
+সক্ষমতা:
+  - Whisper STT: বাংলা + ইংরেজি অডিও → টেক্সট
+  - Tesseract OCR: ছবি থেকে বাংলা + ইংরেজি টেক্সট
+  - PDF/DOCX extraction: ডকুমেন্ট থেকে টেক্সট
+
+------------------------------------------
+Admin Dashboard
+------------------------------------------
+
+URL: https://fazle.iamazim.com (login: X-Internal-Key)
+Tabs: Overview, Drafts, Reports, Users, Audit, Backups, Scheduler, RAG, Observability
+AI Chat: /rag/answer endpoint (RAG + Ollama)
+Chat URL: https://chat.iamazim.com (Open WebUI — owner-only)
+
+------------------------------------------
+Safety Configuration
+------------------------------------------
+
+Auto-reply: AUTO_REPLY_ENABLED=true
+Safe Mode: AI_SAFE_MODE=false (live mode)
+Draft Gate: DRAFT_QUALITY_GATE=true
+Advance requests → always draft (admin review required)
+Finance complaints → always draft (admin review required)
+Release slip → draft only
+
+Source: README.md, /home/azim/core/.env, /home/azim/core/app/config.py

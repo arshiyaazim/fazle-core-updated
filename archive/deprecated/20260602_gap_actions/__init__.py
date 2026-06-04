@@ -1,4 +1,12 @@
-# PHASE-14: orphan candidate — no external callers found 2026-05-07. Safe to remove after confirming.
+# =============================================================================
+# MODULE STATUS: DORMANT
+# Date audited: 2026-06-01
+# External callers: 0 (grep confirmed — only caller is gap_detector/__init__.py,
+#   which is itself dormant with 0 external callers)
+# Paired with: modules/gap_detector/ (this module is only ever called from gap_detector)
+# Since gap_detector has 0 external callers, this module is also unreachable in production.
+# DO NOT DELETE without explicit confirmation from Azim first.
+# =============================================================================
 from __future__ import annotations
 
 import json

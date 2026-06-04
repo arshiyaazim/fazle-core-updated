@@ -1,7 +1,7 @@
 # Fazle Core — Single Source of Truth
 
-**Last Updated:** 2026-05-31
-**Status:** Production Healthy (one accepted risk — see Configuration Flags)
+**Last Updated:** 2026-06-04
+**Status:** Production Healthy — iamazim.com company website deployed (2026-06-04)
 
 This README is the single authoritative reference for the Fazle Core production stack.
 All other documentation, archived notes, and prior READMEs must be considered stale.
@@ -93,7 +93,7 @@ Then restart: `sudo systemctl restart fazle-core.service`
 |---|---|---|
 | `fazle.iamazim.com` | → `127.0.0.1:8200` | Active |
 | `api.iamazim.com` | → `127.0.0.1:8200` (via upstream conf) | Active |
-| `iamazim.com` | → `127.0.0.1:8200` | Active |
+| `iamazim.com` | → static `/var/www/iamazim.com/` (Al-Aqsa company website) | Active ✅ Fixed 2026-06-04 |
 | `www.iamazim.com` | Redirect → `iamazim.com` | Active alias |
 | `chat.iamazim.com` | → `172.22.0.2:8080` (Open WebUI) | Active |
 | `vscode.iamazim.com` | → `127.0.0.1:8443` | Active |

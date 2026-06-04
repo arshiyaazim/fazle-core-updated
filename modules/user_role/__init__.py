@@ -12,7 +12,7 @@ Phone normalization:
 """
 
 import logging
-import re
+from modules.number_identity import normalize_phone as _np
 from typing import TypedDict, Optional
 
 from app.database import fetch_one
@@ -60,17 +60,8 @@ def normalize_phone(phone: str) -> str:
     Normalize phone to 11-digit local BD format (01XXXXXXXXXX).
     Handles: +8801..., 8801..., 01..., 1...
     """
-    if not phone:
-        return ""
-    # Strip everything non-digit
-    digits = re.sub(r"\D", "", phone)
-    # BD country code: 880
-    if digits.startswith("880") and len(digits) >= 13:
-        digits = "0" + digits[3:]
-    # Without leading zero: 1XXXXXXXXX (10 digits)
-    if len(digits) == 10 and digits.startswith("1"):
-        digits = "0" + digits
-    return digits
+    variants = _np(phone)
+    return variants[0] if variants else ""
 
 
 class UserRole(TypedDict):

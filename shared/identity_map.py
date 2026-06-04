@@ -49,21 +49,20 @@ RULES
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import Optional
+
+from modules.number_identity import normalize_phone as _ni_normalize_phone
 
 log = logging.getLogger("fazle.identity_map")
 
 # ── Phone normalisation ──────────────────────────────────────────────────────
 
-_RE_DIGITS = re.compile(r"\D")
-
 
 def normalize_phone(raw: Optional[str]) -> str:
     """
     Canonical Bangladesh phone → 01XXXXXXXXX (11 digits).
-    Strips country code (+880 or 880), leading zeroes beyond one.
+    Delegates to modules.number_identity.normalize_phone — single source of truth.
     Returns empty string for unresolvable input.
 
     Examples
@@ -74,17 +73,13 @@ def normalize_phone(raw: Optional[str]) -> str:
     '01712345678'
     >>> normalize_phone("01712345678")
     '01712345678'
+    >>> normalize_phone("1712345678")
+    '01712345678'
     >>> normalize_phone(None)
     ''
     """
-    if not raw:
-        return ""
-    digits = _RE_DIGITS.sub("", str(raw).strip())
-    if digits.startswith("880") and len(digits) == 13:
-        digits = "0" + digits[3:]
-    if len(digits) == 11 and digits.startswith("0"):
-        return digits
-    return ""
+    variants = _ni_normalize_phone(raw or "")
+    return variants[0] if variants else ""
 
 
 def phone_last10(raw: Optional[str]) -> str:

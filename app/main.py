@@ -37,6 +37,7 @@ from modules.message_router import process_message, get_primary_admin
 from modules.recruitment_flow import is_recruitment_trigger, get_active_session
 from modules import outbound as outbound_queue
 from modules import scheduler as fazle_scheduler
+from shared.queue import record_heartbeat
 from modules.fazle_payroll_engine import start_fpe, stop_fpe
 from modules.fazle_payroll_engine.routes import router as fpe_router
 from modules.escort_roster.routes import router as escort_roster_router
@@ -832,6 +833,15 @@ async def _handle_meta_message(msg: dict, value: dict):
         return
 
     await _save_message("meta", sender, text, direction="inbound")
+
+    try:
+        await record_heartbeat(
+            bridge_id="meta",
+            last_msg_id=msg.get("id"),
+            extra={"sender": sender, "msg_type": msg_type},
+        )
+    except Exception as hb_err:
+        log.debug(f"[META] bridge_heartbeats write failed: {hb_err}")
 
     try:
         await ingest_social_event(
@@ -1972,14 +1982,37 @@ async def rag_search(q: str, k: int = 5, min_score: float = 0.0):
 
 
 @app.get("/rag/answer", dependencies=[Depends(require_api_key)])
-async def rag_answer(q: str, k: int = 3, min_score: float = 1.0):
+async def rag_answer(q: str, k: int = 3, min_score: float = 1.0, llm: bool = True):
+    """
+    RAG answer endpoint.
+    llm=true (default): BM25 search → Ollama generation → natural Bengali answer.
+    llm=false: BM25 search → raw chunk concatenation (fast, no LLM).
+    Falls back to raw chunks if Ollama is unavailable or times out.
+    """
     from modules import rag
     if not q or not q.strip():
         raise HTTPException(status_code=400, detail="q required")
     res = await rag.answer(q, k=max(1, min(k, 10)), min_score=min_score)
     if res is None:
-        return {"q": q, "answer": None, "citations": []}
-    return {"q": q, **res}
+        return {"q": q, "answer": None, "citations": [], "llm_used": False}
+
+    if llm:
+        # Chunks are in res["answer"] as "[1] text\n\n[2] text…"; use as LLM context
+        raw_answer = res.get("answer", "")
+        llm_answer = await ai.generate_rag_answer(q, raw_answer)
+        if llm_answer:
+            return {
+                "q": q,
+                "answer": llm_answer,
+                "raw_chunks": raw_answer,
+                "citations": res.get("citations", []),
+                "top_score": res.get("top_score"),
+                "llm_used": True,
+            }
+        # Fallback: Ollama unavailable or timed out
+        log.warning("[rag/answer] LLM generation failed, returning raw chunks")
+
+    return {"q": q, **res, "llm_used": False}
 
 
 @app.post("/rag/reindex", dependencies=[Depends(require_api_key)])
@@ -1987,6 +2020,93 @@ async def rag_reindex():
     from modules import rag
     s = await rag.build_index()
     return {"ok": True, "stats": s}
+
+
+# ── Chat Lab endpoints ─────────────────────────────────────────────────────────
+_CHAT_ALLOWED_MODELS = {"qwen3:14b", "qwen3:8b", "qwen2.5:3b"}
+
+
+@app.get("/chat/models", dependencies=[Depends(require_api_key)])
+async def chat_models():
+    """Return available models for the Chat Lab selector."""
+    settings = get_settings()
+    ollama_health = await ai.check_ollama_health()
+    installed = set(ollama_health.get("models", []))
+    models = []
+    for m in ("qwen3:14b", "qwen3:8b", "qwen2.5:3b"):
+        models.append({
+            "id": m,
+            "available": m in installed,
+            "active": m == settings.ollama_model,
+        })
+    return {"models": models, "default": settings.ollama_model}
+
+
+@app.post("/chat/message", dependencies=[Depends(require_api_key)])
+async def chat_message(request: Request):
+    """
+    Chat Lab: RAG search → Ollama generation with conversation history.
+
+    Body JSON:
+      q           str   — user question (required)
+      model       str   — model override (optional; must be in allowed list)
+      history     list  — [{role, content}] last N turns (optional)
+      app_context bool  — use RAG knowledge base (default true)
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+
+    q = (body.get("q") or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="q required")
+
+    requested_model = (body.get("model") or "").strip() or None
+    if requested_model and requested_model not in _CHAT_ALLOWED_MODELS:
+        raise HTTPException(status_code=400, detail=f"model not allowed; choose from {sorted(_CHAT_ALLOWED_MODELS)}")
+
+    history = body.get("history") or []
+    if not isinstance(history, list):
+        history = []
+
+    app_context: bool = body.get("app_context", True)
+
+    context = ""
+    citations: list = []
+    top_score = None
+
+    if app_context:
+        from modules import rag
+        res = await rag.answer(q, k=3, min_score=1.0)
+        if res:
+            context = res.get("answer", "")
+            citations = res.get("citations", [])
+            top_score = res.get("top_score")
+
+    settings = get_settings()
+    active_model = requested_model or settings.ollama_model
+    answer = await ai.generate_chat_reply(q, context, history, model=active_model)
+
+    if answer:
+        return {
+            "answer": answer,
+            "model": active_model,
+            "rag_used": app_context and bool(context),
+            "citations": citations,
+            "top_score": top_score,
+        }
+
+    # Fallback: return raw chunks if LLM failed
+    log.warning("[chat/message] LLM failed; returning raw chunks as fallback")
+    return {
+        "answer": context or "উত্তর পাওয়া যায়নি। অফিসে যোগাযোগ করুন।",
+        "model": active_model,
+        "rag_used": bool(context),
+        "citations": citations,
+        "top_score": top_score,
+        "fallback": True,
+    }
 
 
 # ── Batch 22 — Observability endpoints ────────────────────────────────────────

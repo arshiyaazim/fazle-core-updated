@@ -1,3 +1,12 @@
+# =============================================================================
+# MODULE STATUS: DORMANT (production) / ACTIVE (tests only)
+# Date audited: 2026-06-01
+# Production callers: 0 (grep confirmed — no import in app/ or modules/)
+# Test references: 4 lines in tests/unit/test_accountant_payment_pipeline.py
+#   (patched as mock only — not actually imported or used in the pipeline)
+# GAP_SCAN_ENABLED: not applicable to this module
+# DO NOT DELETE without explicit confirmation from Azim first.
+# =============================================================================
 """
 Fazle Core — Short-Term Context Memory (Stage 3)
 

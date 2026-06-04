@@ -1,4 +1,13 @@
-# PHASE-14: orphan candidate — no external callers found 2026-05-07. Safe to remove after confirming.
+# =============================================================================
+# MODULE STATUS: DORMANT
+# Date audited: 2026-06-01
+# External callers: 0 (grep confirmed — no import in app/, modules/, or service_runner.py)
+# Paired with: modules/gap_actions/ (internally imported by this module only)
+# GAP_SCAN_ENABLED: set to "true" in .env but no scheduler ever calls this module —
+#   the env var is wired only inside this file itself; it has no effect in production.
+# NOTE: fazle_payroll_engine/gap_scan.py is a SEPARATE gap scanner (FPE attendance).
+# DO NOT DELETE without explicit confirmation from Azim first.
+# =============================================================================
 from __future__ import annotations
 
 import logging
