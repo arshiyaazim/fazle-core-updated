@@ -1,4 +1,6 @@
-# Fazle Core — Single Source of Truth
+# Fazle Core
+
+> **AL-RIFA’I owner policy (2026-10-17):** this repository is source/reference only for the new AL-RIFA’I app. Do not use it as a parallel cash writer. All WhatsApp cash instructions must obey [`docs/AL-RIFAI-CASH-PAYMENT-POLICY.md`](docs/AL-RIFAI-CASH-PAYMENT-POLICY.md); the older “message reached Accountant = payment complete” rule is superseded. Real Owner/Accountant identifiers must stay in private VPS configuration, not this public repo. — Single Source of Truth
 
 **Last Updated:** 2026-05-31
 **Status:** Production Healthy (one accepted risk — see Configuration Flags)
