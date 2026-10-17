@@ -1,4 +1,6 @@
-# Fazle Payroll Engine (FPE)
+# Fazle Payroll Engine
+
+> **AL-RIFA’I Owner cash rule (2026-10-17):** this module is reference-only for AL-RIFA’I and must not be operated as a parallel cash writer. Any WhatsApp-derived Cash Transaction must pass the mandatory verified Owner → actual Accountant direct-chat identity gate in [`../../docs/AL-RIFAI-CASH-PAYMENT-POLICY.md`](../../docs/AL-RIFAI-CASH-PAYMENT-POLICY.md). A received message is not proof of payment. (FPE)
 
 The FPE is the core financial processing subsystem.  It handles payroll
 calculations, OCR-based payslip parsing, payment ingestion, and database
